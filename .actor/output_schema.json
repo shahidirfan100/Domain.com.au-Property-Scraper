@@ -52,19 +52,19 @@
             "template": "{{value}}"
         },
         "beds": {
-            "type": "integer",
+            "type": "string",
             "title": "Bedrooms",
             "description": "Number of bedrooms",
             "template": "{{value}}"
         },
         "baths": {
-            "type": "integer",
+            "type": "string",
             "title": "Bathrooms",
             "description": "Number of bathrooms",
             "template": "{{value}}"
         },
         "parking": {
-            "type": "integer",
+            "type": "string",
             "title": "Parking Spaces",
             "description": "Number of parking spaces",
             "template": "{{value}}"
@@ -106,40 +106,40 @@
             "template": "{{value}}"
         },
         "images": {
-            "type": "array",
+            "type": "string",
             "title": "All Images",
-            "description": "Array of all property image URLs",
-            "template": "{{#each value}}<img src=\"{{this}}\" style=\"max-width:100px;max-height:100px;margin:2px;\"/>{{/each}}"
+            "description": "Array of all property image URLs (JSON string)",
+            "template": "{{#each (jsonParse value)}}<img src=\"{{this}}\" style=\"max-width:100px;max-height:100px;margin:2px;\"/>{{/each}}"
         },
         "latitude": {
-            "type": "number",
+            "type": "string",
             "title": "Latitude",
             "description": "Geographic latitude coordinate",
             "template": "{{value}}"
         },
         "longitude": {
-            "type": "number",
+            "type": "string",
             "title": "Longitude",
             "description": "Geographic longitude coordinate",
             "template": "{{value}}"
         },
         "inspectionTimes": {
-            "type": "array",
+            "type": "string",
             "title": "Inspection Times",
-            "description": "Scheduled inspection times for the property",
-            "template": "{{#each value}}{{this}}<br/>{{/each}}"
+            "description": "Scheduled inspection times for the property (JSON string)",
+            "template": "{{#each (jsonParse value)}}{{this}}<br/>{{/each}}"
         },
         "features": {
-            "type": "array",
+            "type": "string",
             "title": "Property Features",
-            "description": "List of property features and amenities",
-            "template": "{{#each value}}• {{this}}<br/>{{/each}}"
+            "description": "List of property features and amenities (JSON string)",
+            "template": "{{#each (jsonParse value)}}• {{this}}<br/>{{/each}}"
         },
         "isNew": {
-            "type": "boolean",
+            "type": "string",
             "title": "New Listing",
-            "description": "Whether this is a newly listed property",
-            "template": "{{#if value}}✅ New{{else}}📅 Existing{{/if}}"
+            "description": "Whether this is a newly listed property (true/false)",
+            "template": "{{#if (eq value 'true')}}✅ New{{else}}📅 Existing{{/if}}"
         },
         "inspectionTime": {
             "type": "string",
@@ -194,11 +194,11 @@
                     },
                     "beds": {
                         "label": "Beds",
-                        "format": "number"
+                        "format": "text"
                     },
                     "baths": {
                         "label": "Baths",
-                        "format": "number"
+                        "format": "text"
                     },
                     "url": {
                         "label": "View",
