@@ -35,7 +35,7 @@ const STEALTHY_HEADERS = {
     'Cache-Control': 'max-age=0',
 };
 
-const ENABLE_BROWSER_FALLBACK = true;
+const ENABLE_BROWSER_FALLBACK = false;
 
 // ============================================================================
 // UTILITY FUNCTIONS
@@ -583,7 +583,7 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null, current
                     limit: 2,
                     statusCodes: [408, 429, 500, 502, 503, 504],
                 },
-                timeout: { request: 15000 },
+                timeout: { request: 12000 },
             });
 
             pageHtml = response.body;
@@ -780,7 +780,7 @@ const scrapeViaPlaywright = async ({ url, proxyConfiguration, currentPage = 1 })
         const page = await context.newPage();
         
         // Navigate to page
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
         
         // Wait for content to load
         try {
@@ -1062,7 +1062,14 @@ Actor.main(async () => {
     const validatedMaxResults = Math.max(1, Math.min(maxResults || 50, 1000));
     const validatedMaxPages = Math.max(1, Math.min(maxPages || 5, 50));
     const pageEstimate = Math.ceil(validatedMaxResults / Math.max(20, DEFAULT_PAGE_SIZE));
-    const pageLimit = Math.min(50, Math.max(validatedMaxPages, pageEstimate));
+    const pageLimit = Math.min(
+        50,
+        Math.max(
+            validatedMaxPages,
+            pageEstimate,
+            Math.ceil(validatedMaxResults / 15), // ensure enough pages when dedup/filters drop items
+        ),
+    );
     
     if (!startUrl.includes('domain.com.au')) {
         throw new Error('❌ Invalid input: startUrl must be from domain.com.au');
@@ -1135,20 +1142,15 @@ Actor.main(async () => {
             { url: nextPageUrl },
         );
 
-        let result = null;
+        let result = await scrapeListingPage({
+            url: nextPageUrl,
+            proxyConfiguration: proxyConfig,
+            currentPage,
+        });
 
-        // Primary: Playwright to render listing pages for reliability
-        if (ENABLE_BROWSER_FALLBACK) {
+        if ((!result || result.properties.length === 0) && ENABLE_BROWSER_FALLBACK) {
+            log.info(`🌐 Attempting Playwright fallback...`);
             result = await scrapeViaPlaywright({
-                url: nextPageUrl,
-                proxyConfiguration: proxyConfig,
-                currentPage,
-            });
-        }
-
-        // Fallback: direct HTTP + cheerio
-        if (!result || result.properties.length === 0) {
-            result = await scrapeListingPage({
                 url: nextPageUrl,
                 proxyConfiguration: proxyConfig,
                 currentPage,
