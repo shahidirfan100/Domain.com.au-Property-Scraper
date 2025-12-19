@@ -35,7 +35,7 @@ const STEALTHY_HEADERS = {
     'Cache-Control': 'max-age=0',
 };
 
-const ENABLE_BROWSER_FALLBACK = false;
+const ENABLE_BROWSER_FALLBACK = true;
 
 // ============================================================================
 // UTILITY FUNCTIONS
@@ -110,6 +110,18 @@ const extractPriceFromText = (text) => {
 
     // Contact agent, auction, etc.
     return cleanedText;
+};
+
+const extractLandSizeFromText = (text) => {
+    if (!text) return null;
+    const cleaned = cleanText(text);
+    if (!cleaned) return null;
+    const match = cleaned.match(/([\d,.]+)\s*(m2|sqm|m²)/i);
+    if (match) {
+        const value = match[1].replace(/,/g, '');
+        return `${value}m2`;
+    }
+    return null;
 };
 
 const parsePropertyFeatures = ($elem) => {
@@ -195,11 +207,42 @@ const parseJsonLdProperty = (jsonLd) => {
                 property.longitude = data.geo.longitude;
             }
             
-            if (data.offers) {
-                const offers = Array.isArray(data.offers) ? data.offers[0] : data.offers;
-                property.price = offers.price || offers.priceSpecification?.price;
-                property.priceCurrency = offers.priceCurrency;
+        if (data.offers) {
+            const offers = Array.isArray(data.offers) ? data.offers[0] : data.offers;
+            property.price = offers.price || offers.priceSpecification?.price;
+            property.priceCurrency = offers.priceCurrency;
+        }
+            
+        if (!property.landSize) {
+            const landValue =
+                data.lotSize?.value ||
+                data.lotSize ||
+                data.landSize?.value ||
+                data.landSize ||
+                data.area?.value ||
+                data.area;
+            if (landValue) {
+                property.landSize = `${landValue}m2`;
             }
+        }
+
+        if (!property.agency) {
+            property.agency =
+                data.seller?.name ||
+                data.provider?.name ||
+                data.brand?.name ||
+                data.publisher?.name ||
+                property.agency;
+        }
+
+        if (!property.agent) {
+            property.agent =
+                data.seller?.employee?.name ||
+                data.provider?.employee?.name ||
+                data.seller?.contactPoint?.name ||
+                data.provider?.contactPoint?.name ||
+                property.agent;
+        }
             
             property.description = data.description || property.description;
             property.numberOfRooms = data.numberOfRooms || property.numberOfRooms;
@@ -207,10 +250,10 @@ const parseJsonLdProperty = (jsonLd) => {
             property.numberOfBedrooms = data.numberOfBedrooms || property.numberOfBedrooms;
             property.numberOfBathroomsTotal = data.numberOfBathroomsTotal || property.numberOfBathroomsTotal;
             
-            if (data.image) {
-                property.images = Array.isArray(data.image) ? data.image : [data.image];
-            }
+        if (data.image) {
+            property.images = Array.isArray(data.image) ? data.image : [data.image];
         }
+    }
     }
 
     return Object.keys(property).length > 0 ? property : null;
@@ -221,6 +264,7 @@ const parseJsonLdProperty = (jsonLd) => {
 // ============================================================================
 
 const DEFAULT_PAGE_SIZE = 40;
+const MAX_CARD_PARSE = 80;
 
 const createStealthHeaders = () => ({
     ...STEALTHY_HEADERS,
@@ -418,6 +462,32 @@ const extractListingsFromJsonPayload = ({ payload, sourceUrl, currentPage }) => 
     return { properties, totalResults, nextPage };
 };
 
+const findFirstListingObject = (payload) => {
+    const visited = new Set();
+    const queue = [payload];
+
+    while (queue.length) {
+        const current = queue.shift();
+        if (!current) continue;
+        if (typeof current === 'object') {
+            if (visited.has(current)) continue;
+            visited.add(current);
+        }
+
+        if (isListingLike(current)) return current;
+
+        if (current && typeof current === 'object') {
+            for (const value of Object.values(current)) {
+                if (value && (typeof value === 'object' || Array.isArray(value))) {
+                    queue.push(value);
+                }
+            }
+        }
+    }
+
+    return null;
+};
+
 const createJsonApiCandidates = (url, page) => {
     const candidates = new Set();
 
@@ -456,7 +526,7 @@ const fetchListingsViaJsonApi = async ({ url, page, proxyConfiguration }) => {
                     limit: 1,
                     statusCodes: [408, 429, 500, 502, 503, 504],
                 },
-                timeout: { request: 8000 },
+                timeout: { request: 5000 },
             });
 
             const payload = safeJsonParse(response.body);
@@ -565,6 +635,10 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null, current
         if (propertyCards.length === 0) {
             log.warning('❌ No property cards found with any selector strategy');
             log.debug(`Page HTML sample: ${pageHtml.substring(0, 500)}`);
+        }
+        
+        if (propertyCards.length > MAX_CARD_PARSE) {
+            propertyCards = propertyCards.slice(0, MAX_CARD_PARSE);
         }
 
         for (const card of propertyCards) {
@@ -762,17 +836,31 @@ const scrapePropertyDetails = async ({ url, proxyConfiguration }) => {
         
         const headers = createStealthHeaders();
 
-        const response = await gotScraping({
-            url,
-            headers,
-            proxyUrl: proxyConfiguration ? await proxyConfiguration.newUrl() : undefined,
-            responseType: 'text',
-            retry: {
-                limit: 2,
-                statusCodes: [408, 429, 500, 502, 503, 504],
-            },
-            timeout: { request: 20000 },
-        });
+        let response = null;
+        let lastError = null;
+        const maxAttempts = 2;
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                response = await gotScraping({
+                    url,
+                    headers,
+                    proxyUrl: proxyConfiguration ? await proxyConfiguration.newUrl() : undefined,
+                    responseType: 'text',
+                    retry: {
+                        limit: 1,
+                        statusCodes: [408, 429, 500, 502, 503, 504],
+                    },
+                    timeout: { request: 20000 },
+                });
+                break;
+            } catch (err) {
+                lastError = err;
+                log.warning(`⚠️  Detail request failed (attempt ${attempt}/${maxAttempts}): ${err.message}`);
+            }
+        }
+
+        if (!response) throw lastError || new Error('Detail request failed');
 
         const $ = cheerioLoad(response.body);
         const details = {};
@@ -794,6 +882,12 @@ const scrapePropertyDetails = async ({ url, proxyConfiguration }) => {
             });
             if (embeddedDetails.properties.length > 0) {
                 Object.assign(details, embeddedDetails.properties[0]);
+            } else {
+                const embeddedListing = findFirstListingObject(embeddedState);
+                if (embeddedListing) {
+                    const normalized = normalizeListingFromJson(embeddedListing);
+                    if (normalized) Object.assign(details, normalized);
+                }
             }
         }
 
@@ -833,11 +927,19 @@ const scrapePropertyDetails = async ({ url, proxyConfiguration }) => {
         details.inspectionTimes = inspectionTimes;
 
         // Extract agent info
-        const agentName = cleanText($('[data-testid="listing-details__agent-name"]').text());
-        const agencyName = cleanText($('[data-testid="listing-details__agency-name"]').text());
-        
-        details.agent = agentName;
-        details.agency = agencyName;
+        const agentName = cleanText(
+            $('[data-testid="listing-details__agent-name"], [data-testid="agent-card__name"], [class*="agent-name"]')
+                .first()
+                .text(),
+        );
+        const agencyName = cleanText(
+            $('[data-testid="listing-details__agency-name"], [data-testid="agent-card__agency-name"], [class*="agency-name"]')
+                .first()
+                .text(),
+        );
+
+        details.agent = details.agent || agentName;
+        details.agency = details.agency || agencyName;
 
         // Extract all images
         const images = [];
@@ -856,6 +958,57 @@ const scrapePropertyDetails = async ({ url, proxyConfiguration }) => {
             if (feature) featuresList.push(feature);
         });
         details.features = featuresList;
+
+        // Land size
+        if (!details.landSize) {
+            const landText = cleanText(
+                $('[data-testid="property-features-text-container"]:contains("Land"), [data-testid="listing-summary-land-size"]')
+                    .first()
+                    .text(),
+            );
+            details.landSize = extractLandSizeFromText(landText);
+        }
+        if (!details.landSize && details.features?.length) {
+            const landFeature = details.features.find((feature) => /m2|sqm|m²/i.test(feature));
+            details.landSize = extractLandSizeFromText(landFeature);
+        }
+
+        // Latitude/Longitude from meta tags or map data attributes
+        if (!details.latitude || !details.longitude) {
+            let metaLat = $('meta[property="place:location:latitude"], meta[name="place:location:latitude"]').attr('content');
+            let metaLon = $('meta[property="place:location:longitude"], meta[name="place:location:longitude"]').attr('content');
+            if (!metaLat || !metaLon) {
+                const geoPosition = $('meta[property="geo.position"], meta[name="geo.position"]').attr('content');
+                if (geoPosition && geoPosition.includes(';')) {
+                    const [lat, lon] = geoPosition.split(';').map((val) => val.trim());
+                    metaLat = metaLat || lat;
+                    metaLon = metaLon || lon;
+                }
+            }
+
+            const mapElem = $('[data-testid*="map"], [data-testid*="Map"]').first();
+            const dataLat =
+                mapElem.attr('data-lat') ||
+                mapElem.attr('data-latitude') ||
+                mapElem.attr('data-latitude-deg');
+            const dataLon =
+                mapElem.attr('data-lng') ||
+                mapElem.attr('data-longitude') ||
+                mapElem.attr('data-lon') ||
+                mapElem.attr('data-longitude-deg');
+            let latCandidate = metaLat || dataLat;
+            let lonCandidate = metaLon || dataLon;
+
+            const dataLocation = mapElem.attr('data-location');
+            if ((!latCandidate || !lonCandidate) && dataLocation) {
+                const parsed = safeJsonParse(dataLocation);
+                latCandidate = latCandidate || parsed?.lat || parsed?.latitude;
+                lonCandidate = lonCandidate || parsed?.lng || parsed?.longitude;
+            }
+
+            if (!details.latitude && latCandidate) details.latitude = latCandidate;
+            if (!details.longitude && lonCandidate) details.longitude = lonCandidate;
+        }
 
         // Extract property type
         const propertyType = cleanText($('[data-testid="listing-summary-property-type"]').text());
@@ -1061,7 +1214,7 @@ Actor.main(async () => {
     if (collectDetails && allProperties.length > 0) {
         log.info(`📋 Collecting full details for ${allProperties.length} properties...`);
 
-        const maxConcurrency = 2; // Lower concurrency to stay stealthy/cost-effective
+        const maxConcurrency = 3; // Moderate concurrency for faster details without heavy load
         const limiter = createConcurrencyLimiter(maxConcurrency);
         
         let detailsCollected = 0;
@@ -1090,7 +1243,7 @@ Actor.main(async () => {
                     detailsCollected++;
 
                     // Random delay to avoid rate limiting
-                    await sleep(400 + Math.random() * 600);
+                    await sleep(200 + Math.random() * 400);
                 } catch (error) {
                     log.warning(`⚠️  Failed details for ${property.url}: ${error.message}`);
                 }
