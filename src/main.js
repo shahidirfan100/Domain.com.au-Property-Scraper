@@ -1242,8 +1242,15 @@ Actor.main(async () => {
     }
 
     // Save results
-    log.info(`💾 Saving ${allProperties.length} properties to dataset...`);
-    await pushDataInBatches(allProperties, DATASET_BATCH_SIZE);
+        // Flush in batches during the run to avoid saving only at the end
+        if (allProperties.length % DATASET_BATCH_SIZE === 0 || !nextPageUrl || allProperties.length >= validatedMaxResults) {
+            await pushDataInBatches(allProperties.splice(0, DATASET_BATCH_SIZE), DATASET_BATCH_SIZE);
+        }
+
+    // Final flush for any remaining items
+    if (allProperties.length) {
+        await pushDataInBatches(allProperties.splice(0, allProperties.length), DATASET_BATCH_SIZE);
+    }
 
     // Final report
     log.info('═'.repeat(70));
