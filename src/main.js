@@ -35,6 +35,8 @@ const STEALTHY_HEADERS = {
     'Cache-Control': 'max-age=0',
 };
 
+const ENABLE_BROWSER_FALLBACK = false;
+
 // ============================================================================
 // UTILITY FUNCTIONS
 // ============================================================================
@@ -52,6 +54,38 @@ const ensureAbsoluteUrl = (url) => {
     if (!url) return null;
     if (url.startsWith('http')) return url;
     return `${DOMAIN_BASE}${url.startsWith('/') ? '' : '/'}${url}`;
+};
+
+const isLikelyListingUrl = (url) => {
+    if (!url) return false;
+    const normalized = ensureAbsoluteUrl(url);
+    if (!normalized) return false;
+    if (normalized === DOMAIN_BASE || normalized === `${DOMAIN_BASE}/`) return false;
+
+    const lower = normalized.toLowerCase();
+    if (lower.includes('/sale/') && lower.includes('?')) return false;
+    if (lower.includes('/rent/') && lower.includes('?')) return false;
+
+    return (
+        lower.includes('/property/') ||
+        lower.includes('/project/') ||
+        /-\d{6,}(?:[/?#]|$)/.test(lower)
+    );
+};
+
+const pickListingHref = (hrefs) => {
+    if (!hrefs || hrefs.length === 0) return null;
+    const filtered = hrefs.filter((href) => href && !href.startsWith('#'));
+    const candidate = filtered.find((href) => {
+        const lower = href.toLowerCase();
+        if (lower.startsWith('mailto:') || lower.startsWith('tel:')) return false;
+        return (
+            lower.includes('/property/') ||
+            lower.includes('/project/') ||
+            /-\d{6,}(?:[/?#]|$)/.test(lower)
+        );
+    });
+    return candidate || filtered[0] || null;
 };
 
 const extractPriceFromText = (text) => {
@@ -286,10 +320,11 @@ const normalizeListingFromJson = (rawListing) => {
         listing.listingUrl ||
         listing.canonicalUrl ||
         (listing.listingSlug ? ensureAbsoluteUrl(listing.listingSlug) : null);
+    const normalizedUrl = ensureAbsoluteUrl(urlCandidate);
 
     const property = {
         id: String(listing.id || listing.listingId || propertyDetails.id || listing.listingSlug || '') || null,
-        url: ensureAbsoluteUrl(urlCandidate),
+        url: isLikelyListingUrl(normalizedUrl) ? normalizedUrl : null,
         address: listing.displayAddress || address.displayAddress || address.street || address.streetAddress || null,
         suburb: address.suburb || address.locality || address.suburbName || null,
         state: address.state || address.stateAbbreviation || address.region || null,
@@ -324,7 +359,7 @@ const normalizeListingFromJson = (rawListing) => {
     }
 
     if (!property.id && property.url) {
-        const idMatch = property.url.match(/(\d+)/);
+        const idMatch = property.url.match(/(\d{6,})(?:[/?#]|$)/);
         if (idMatch) property.id = idMatch[1];
     }
 
@@ -421,7 +456,7 @@ const fetchListingsViaJsonApi = async ({ url, page, proxyConfiguration }) => {
                     limit: 1,
                     statusCodes: [408, 429, 500, 502, 503, 504],
                 },
-                timeout: { request: 12000 },
+                timeout: { request: 8000 },
             });
 
             const payload = safeJsonParse(response.body);
@@ -477,7 +512,7 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null, current
                     limit: 2,
                     statusCodes: [408, 429, 500, 502, 503, 504],
                 },
-                timeout: { request: 20000 },
+                timeout: { request: 15000 },
             });
 
             pageHtml = response.body;
@@ -538,25 +573,22 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null, current
                 
                 const property = {};
                 
-                // Extract URL - multiple selector strategies
-                let linkElem = $card.find('a[href*="/property/"]').first();
-                if (!linkElem.length) linkElem = $card.find('a').first();
-                
-                property.url = ensureAbsoluteUrl(linkElem.attr('href'));
-                
-                if (!property.url || !property.url.includes('/property/')) {
-                    log.debug('⏭️  Skipping card: no valid property URL found');
+                // Extract URL - pick the most likely listing link
+                const hrefs = $card
+                    .find('a[href]')
+                    .map((_, el) => $(el).attr('href'))
+                    .get();
+                const listingHref = pickListingHref(hrefs);
+                property.url = ensureAbsoluteUrl(listingHref);
+
+                if (!isLikelyListingUrl(property.url)) {
+                    log.debug('⏭️  Skipping card: no valid listing URL found');
                     continue;
                 }
 
-                // Extract ID from URL
-                const idMatch = property.url.match(/-([\d]+)$/);
+                // Extract ID from URL (if present)
+                const idMatch = property.url.match(/(\d{6,})(?:[/?#]|$)/);
                 property.id = idMatch ? idMatch[1] : null;
-                
-                if (!property.id) {
-                    log.debug('⏭️  Skipping card: no property ID extracted');
-                    continue;
-                }
 
                 // Extract address - Strategy: Try multiple selectors
                 let addressText = cleanText($card.find('h2').first().text());
@@ -736,10 +768,10 @@ const scrapePropertyDetails = async ({ url, proxyConfiguration }) => {
             proxyUrl: proxyConfiguration ? await proxyConfiguration.newUrl() : undefined,
             responseType: 'text',
             retry: {
-                limit: 3,
+                limit: 2,
                 statusCodes: [408, 429, 500, 502, 503, 504],
             },
-            timeout: { request: 60000 },
+            timeout: { request: 20000 },
         });
 
         const $ = cheerioLoad(response.body);
@@ -855,7 +887,6 @@ Actor.main(async () => {
         maxPages = 5,
         collectDetails = true,
         proxyConfiguration,
-        enableBrowserFallback = false,
         location = null,
         propertyType = null,
         minPrice = null,
@@ -937,6 +968,7 @@ Actor.main(async () => {
     let currentPage = 1;
     let nextPageUrl = searchUrl;
     let totalResultsCount = null;
+    let jsonApiEnabled = true;
 
     // Scraping loop
     while (nextPageUrl && allProperties.length < validatedMaxResults && currentPage <= validatedMaxPages) {
@@ -945,14 +977,26 @@ Actor.main(async () => {
             { url: nextPageUrl },
         );
 
-        let result = await fetchListingsViaJsonApi({
-            url: nextPageUrl,
-            page: currentPage,
-            proxyConfiguration: proxyConfig,
-        });
+        let result = null;
+        if (jsonApiEnabled) {
+            result = await fetchListingsViaJsonApi({
+                url: nextPageUrl,
+                page: currentPage,
+                proxyConfiguration: proxyConfig,
+            });
+        }
+
+        if (jsonApiEnabled && (!result || result.properties.length === 0)) {
+            jsonApiEnabled = false;
+            log.info('ℹ️ JSON API returned no results; disabling for remaining pages.');
+        }
 
         if (!result || result.properties.length === 0) {
-            log.warning(`⚠️ JSON API returned no results on page ${currentPage}, falling back to HTML.`);
+            if (jsonApiEnabled) {
+                log.warning(`⚠️ JSON API returned no results on page ${currentPage}, falling back to HTML.`);
+            } else {
+                log.info('ℹ️ JSON API disabled; using HTML.');
+            }
             result = await scrapeListingPage({
                 url: nextPageUrl,
                 proxyConfiguration: proxyConfig,
@@ -961,7 +1005,7 @@ Actor.main(async () => {
         }
 
         if (!result || result.properties.length === 0) {
-            if (enableBrowserFallback) {
+            if (ENABLE_BROWSER_FALLBACK) {
                 log.info(`🌐 Attempting Playwright fallback...`);
                 result = await scrapeViaPlaywright({
                     url: nextPageUrl,
@@ -1024,6 +1068,11 @@ Actor.main(async () => {
         const detailPromises = allProperties.map((property, idx) => 
             limiter(async () => {
                 try {
+                    if (!property.url || !isLikelyListingUrl(property.url)) {
+                        log.debug(`⏭️  Skipping details for invalid URL: ${property.url || 'null'}`);
+                        return;
+                    }
+
                     log.info(`[${idx + 1}/${allProperties.length}] Fetching details: ${property.address}`);
                     
                     const details = await scrapePropertyDetails({
@@ -1041,7 +1090,7 @@ Actor.main(async () => {
                     detailsCollected++;
 
                     // Random delay to avoid rate limiting
-                    await sleep(800 + Math.random() * 1200);
+                    await sleep(400 + Math.random() * 600);
                 } catch (error) {
                     log.warning(`⚠️  Failed details for ${property.url}: ${error.message}`);
                 }
