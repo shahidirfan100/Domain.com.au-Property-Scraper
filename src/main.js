@@ -264,7 +264,8 @@ const parseJsonLdProperty = (jsonLd) => {
 // ============================================================================
 
 const DEFAULT_PAGE_SIZE = 40;
-const MAX_CARD_PARSE = 80;
+const MAX_CARD_PARSE = 160;
+const DATASET_BATCH_SIZE = 10;
 
 const createStealthHeaders = () => ({
     ...STEALTHY_HEADERS,
@@ -539,7 +540,7 @@ const fetchListingsViaJsonApi = async ({ url, page, proxyConfiguration }) => {
             });
 
             if (extracted.properties.length > 0) {
-                log.info(`? JSON API succeeded via ${apiUrl} with ${extracted.properties.length} listings`);
+                log.debug(`JSON API succeeded via ${apiUrl} with ${extracted.properties.length} listings`);
                 return { ...extracted, apiUrl, properties: extracted.properties.map(addMetadata) };
             }
         } catch (err) {
@@ -566,7 +567,7 @@ const addMetadata = (property) => {
 
 const scrapeListingPage = async ({ url, proxyConfiguration, html = null, currentPage = 1 }) => {
     try {
-        log.info(`Scraping listing page: ${url}`);
+        log.debug(`Scraping listing page: ${url}`);
         
         let pageHtml = html;
         
@@ -601,7 +602,7 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null, current
                 currentPage,
             });
             if (embeddedResult.properties.length > 0) {
-                log.info(`? Extracted ${embeddedResult.properties.length} listings from embedded JSON`);
+                log.debug(`Extracted ${embeddedResult.properties.length} listings from embedded JSON`);
                 embeddedResult.properties.forEach((p) => properties.push(addMetadata(p)));
                 totalResults = embeddedResult.totalResults || totalResults;
                 nextPageCandidate = embeddedResult.nextPage || nextPageCandidate;
@@ -618,18 +619,18 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null, current
         
         // Strategy 1: Try data-testid selectors (newer Domain interface)
         propertyCards = $('[data-testid*="listing-card"]').toArray();
-        log.info(`[Strategy 1] Found ${propertyCards.length} cards with data-testid`);
+        log.debug(`[Strategy 1] Found ${propertyCards.length} cards with data-testid`);
         
         // Strategy 2: Try class-based selectors (common pattern)
         if (propertyCards.length === 0) {
             propertyCards = $('article.listing-card, article[class*="listing"], div[class*="property-card"]').toArray();
-            log.info(`[Strategy 2] Found ${propertyCards.length} cards with class selectors`);
+            log.debug(`[Strategy 2] Found ${propertyCards.length} cards with class selectors`);
         }
         
         // Strategy 3: Try generic container selectors
         if (propertyCards.length === 0) {
             propertyCards = $('article, [role="listitem"]').toArray();
-            log.info(`[Strategy 3] Found ${propertyCards.length} cards with generic selectors`);
+            log.debug(`[Strategy 3] Found ${propertyCards.length} cards with generic selectors`);
         }
 
         if (propertyCards.length === 0) {
@@ -751,7 +752,7 @@ const scrapeViaPlaywright = async ({ url, proxyConfiguration, currentPage = 1 })
     let context;
     
     try {
-        log.info(`Scraping via Playwright: ${url}`);
+        log.debug(`Scraping via Playwright: ${url}`);
         
         const launchOptions = {
             headless: true,
@@ -832,7 +833,7 @@ const scrapeViaPlaywright = async ({ url, proxyConfiguration, currentPage = 1 })
 
 const scrapePropertyDetails = async ({ url, proxyConfiguration }) => {
     try {
-        log.info(`Scraping property details: ${url}`);
+        log.debug(`Scraping property details: ${url}`);
         
         const headers = createStealthHeaders();
 
@@ -856,11 +857,14 @@ const scrapePropertyDetails = async ({ url, proxyConfiguration }) => {
                 break;
             } catch (err) {
                 lastError = err;
-                log.warning(`⚠️  Detail request failed (attempt ${attempt}/${maxAttempts}): ${err.message}`);
+                log.debug(`Detail request failed (attempt ${attempt}/${maxAttempts}): ${err.message}`);
             }
         }
 
-        if (!response) throw lastError || new Error('Detail request failed');
+        if (!response) {
+            const message = lastError ? lastError.message : 'Detail request failed';
+            throw new Error(message);
+        }
 
         const $ = cheerioLoad(response.body);
         const details = {};
@@ -1057,6 +1061,8 @@ Actor.main(async () => {
     
     const validatedMaxResults = Math.max(1, Math.min(maxResults || 50, 1000));
     const validatedMaxPages = Math.max(1, Math.min(maxPages || 5, 50));
+    const pageEstimate = Math.ceil(validatedMaxResults / Math.max(20, DEFAULT_PAGE_SIZE));
+    const pageLimit = Math.min(50, Math.max(validatedMaxPages, pageEstimate));
     
     if (!startUrl.includes('domain.com.au')) {
         throw new Error('❌ Invalid input: startUrl must be from domain.com.au');
@@ -1065,7 +1071,7 @@ Actor.main(async () => {
     log.info('✅ Domain.com.au Property Scraper started', { 
         startUrl, 
         maxResults: validatedMaxResults, 
-        maxPages: validatedMaxPages,
+        maxPages: pageLimit,
         collectDetails,
     });
 
@@ -1121,53 +1127,32 @@ Actor.main(async () => {
     let currentPage = 1;
     let nextPageUrl = searchUrl;
     let totalResultsCount = null;
-    let jsonApiEnabled = true;
 
     // Scraping loop
-    while (nextPageUrl && allProperties.length < validatedMaxResults && currentPage <= validatedMaxPages) {
+    while (nextPageUrl && allProperties.length < validatedMaxResults && currentPage <= pageLimit) {
         log.info(
-            `📄 Page ${currentPage}/${validatedMaxPages} - Collected: ${allProperties.length}/${validatedMaxResults}`,
+            `📄 Page ${currentPage}/${pageLimit} - Collected: ${allProperties.length}/${validatedMaxResults}`,
             { url: nextPageUrl },
         );
 
         let result = null;
-        if (jsonApiEnabled) {
-            result = await fetchListingsViaJsonApi({
-                url: nextPageUrl,
-                page: currentPage,
-                proxyConfiguration: proxyConfig,
-            });
-        }
 
-        if (jsonApiEnabled && (!result || result.properties.length === 0)) {
-            jsonApiEnabled = false;
-            log.info('ℹ️ JSON API returned no results; disabling for remaining pages.');
-        }
-
-        if (!result || result.properties.length === 0) {
-            if (jsonApiEnabled) {
-                log.warning(`⚠️ JSON API returned no results on page ${currentPage}, falling back to HTML.`);
-            } else {
-                log.info('ℹ️ JSON API disabled; using HTML.');
-            }
-            result = await scrapeListingPage({
+        // Primary: Playwright to render listing pages for reliability
+        if (ENABLE_BROWSER_FALLBACK) {
+            result = await scrapeViaPlaywright({
                 url: nextPageUrl,
                 proxyConfiguration: proxyConfig,
                 currentPage,
             });
         }
 
+        // Fallback: direct HTTP + cheerio
         if (!result || result.properties.length === 0) {
-            if (ENABLE_BROWSER_FALLBACK) {
-                log.info(`🌐 Attempting Playwright fallback...`);
-                result = await scrapeViaPlaywright({
-                    url: nextPageUrl,
-                    proxyConfiguration: proxyConfig,
-                    currentPage,
-                });
-            } else {
-                log.info('🧭 Browser fallback disabled; skipping Playwright for speed/cost.');
-            }
+            result = await scrapeListingPage({
+                url: nextPageUrl,
+                proxyConfiguration: proxyConfig,
+                currentPage,
+            });
         }
 
         if (!result || result.properties.length === 0) {
@@ -1204,7 +1189,7 @@ Actor.main(async () => {
 
         // Rate limiting: human-like delays
         if (nextPageUrl && allProperties.length < validatedMaxResults) {
-            const delay = 800 + Math.random() * 1200;
+            const delay = 500 + Math.random() * 900;
             log.debug(`⏳ Rate limiting: ${Math.round(delay)}ms before next page`);
             await sleep(delay);
         }
@@ -1226,7 +1211,7 @@ Actor.main(async () => {
                         return;
                     }
 
-                    log.info(`[${idx + 1}/${allProperties.length}] Fetching details: ${property.address}`);
+                    log.debug(`[${idx + 1}/${allProperties.length}] Fetching details: ${property.address}`);
                     
                     const details = await scrapePropertyDetails({
                         url: property.url,
@@ -1243,7 +1228,7 @@ Actor.main(async () => {
                     detailsCollected++;
 
                     // Random delay to avoid rate limiting
-                    await sleep(200 + Math.random() * 400);
+                    await sleep(150 + Math.random() * 350);
                 } catch (error) {
                     log.warning(`⚠️  Failed details for ${property.url}: ${error.message}`);
                 }
@@ -1256,14 +1241,14 @@ Actor.main(async () => {
 
     // Save results
     log.info(`💾 Saving ${allProperties.length} properties to dataset...`);
-    await Dataset.pushData(allProperties);
+    await pushDataInBatches(allProperties, DATASET_BATCH_SIZE);
 
     // Final report
     log.info('═'.repeat(70));
     log.info('✅ SCRAPING COMPLETED SUCCESSFULLY');
     log.info('═'.repeat(70));
     log.info(`📊 Properties scraped: ${allProperties.length}/${validatedMaxResults}`);
-    log.info(`📄 Pages processed: ${currentPage - 1}/${validatedMaxPages}`);
+    log.info(`📄 Pages processed: ${currentPage - 1}/${pageLimit}`);
     log.info(`🎯 Details collected: ${collectDetails ? 'YES' : 'NO'}`);
     log.info(`📈 Total available: ${totalResultsCount || 'Unknown'}`);
     log.info('═'.repeat(70));
@@ -1296,4 +1281,13 @@ function createConcurrencyLimiter(maxConcurrency) {
         queue.push({ task, resolve, reject });
         next();
     });
+}
+
+async function pushDataInBatches(items, batchSize) {
+    if (!items || items.length === 0) return;
+    const size = Math.max(1, batchSize || DATASET_BATCH_SIZE);
+    for (let i = 0; i < items.length; i += size) {
+        const batch = items.slice(i, i + size);
+        await Dataset.pushData(batch);
+    }
 }
