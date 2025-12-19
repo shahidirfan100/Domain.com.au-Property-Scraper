@@ -878,6 +878,8 @@ Actor.main(async () => {
         sortBy = 'dateupdated-desc',
     } = input;
 
+    const proxyConfig = proxyConfiguration ? await Actor.createProxyConfiguration(proxyConfiguration) : null;
+
     // ========================================================================
     // INPUT VALIDATION
     // ========================================================================
@@ -959,14 +961,14 @@ Actor.main(async () => {
         let result = await fetchListingsViaJsonApi({
             url: nextPageUrl,
             page: currentPage,
-            proxyConfiguration,
+            proxyConfiguration: proxyConfig,
         });
 
         if (!result || result.properties.length === 0) {
             log.warning(`⚠️ JSON API returned no results on page ${currentPage}, falling back to HTML.`);
             result = await scrapeListingPage({
                 url: nextPageUrl,
-                proxyConfiguration,
+                proxyConfiguration: proxyConfig,
                 currentPage,
             });
         }
@@ -975,7 +977,7 @@ Actor.main(async () => {
             log.info(`🌐 Attempting Playwright fallback...`);
             result = await scrapeViaPlaywright({
                 url: nextPageUrl,
-                proxyConfiguration,
+                proxyConfiguration: proxyConfig,
                 currentPage,
             });
         }
@@ -1035,7 +1037,7 @@ Actor.main(async () => {
                     
                     const details = await scrapePropertyDetails({
                         url: property.url,
-                        proxyConfiguration,
+                        proxyConfiguration: proxyConfig,
                     });
 
                     // Merge details with listing data (prefer existing data)
