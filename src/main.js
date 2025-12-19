@@ -56,24 +56,24 @@ const ensureAbsoluteUrl = (url) => {
 
 const extractPriceFromText = (text) => {
     if (!text) return null;
-    
+
     const cleanedText = cleanText(text);
-    
+
     // Handle price ranges like "$500,000-$600,000" or "$500,000 - $600,000"
-    const rangeMatch = cleanedText.match(/\$?([\d,]+)\s*[-–to]\s*\$?([\d,]+)/i);
+    const rangeMatch = cleanedText.match(/\$?([\d,]+)\s*(?:-|to)\s*\$?([\d,]+)/i);
     if (rangeMatch) {
         const min = rangeMatch[1].replace(/,/g, '');
         const max = rangeMatch[2].replace(/,/g, '');
-        return `$${parseInt(min).toLocaleString()}-$${parseInt(max).toLocaleString()}`;
+        return `$${parseInt(min, 10).toLocaleString()}-$${parseInt(max, 10).toLocaleString()}`;
     }
-    
+
     // Handle single prices like "$550,000"
     const priceMatch = cleanedText.match(/\$?([\d,]+)/);
     if (priceMatch) {
         const price = priceMatch[1].replace(/,/g, '');
-        return `$${parseInt(price).toLocaleString()}`;
+        return `$${parseInt(price, 10).toLocaleString()}`;
     }
-    
+
     // Contact agent, auction, etc.
     return cleanedText;
 };
@@ -91,20 +91,20 @@ const parsePropertyFeatures = ($elem) => {
     
     // Extract beds
     const bedsMatch = featureText.match(/(\d+)\s*Bed/i);
-    if (bedsMatch) features.beds = parseInt(bedsMatch[1]);
+    if (bedsMatch) features.beds = parseInt(bedsMatch[1], 10);
 
     // Extract baths
     const bathsMatch = featureText.match(/(\d+)\s*Bath/i);
-    if (bathsMatch) features.baths = parseInt(bathsMatch[1]);
+    if (bathsMatch) features.baths = parseInt(bathsMatch[1], 10);
 
     // Extract parking
     const parkingMatch = featureText.match(/(\d+)\s*Parking/i);
-    if (parkingMatch) features.parking = parseInt(parkingMatch[1]);
+    if (parkingMatch) features.parking = parseInt(parkingMatch[1], 10);
 
     // Extract land size
-    const landSizeMatch = featureText.match(/([\d,]+)\s*m²/i);
+    const landSizeMatch = featureText.match(/([\d,.]+)\s*m/i);
     if (landSizeMatch) {
-        features.landSize = `${landSizeMatch[1]}m²`;
+        features.landSize = `${landSizeMatch[1]}m2`;
     }
 
     return features;
@@ -183,18 +183,290 @@ const parseJsonLdProperty = (jsonLd) => {
 };
 
 // ============================================================================
+// JSON API / EMBEDDED STATE EXTRACTION
+// ============================================================================
+
+const DEFAULT_PAGE_SIZE = 40;
+
+const createStealthHeaders = () => ({
+    ...STEALTHY_HEADERS,
+    'User-Agent': getRandomUserAgent(),
+    'Accept': 'application/json,text/html;q=0.9,*/*;q=0.8',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+    'Referer': DOMAIN_BASE,
+});
+
+const safeJsonParse = (maybeJson) => {
+    if (!maybeJson) return null;
+    try {
+        return JSON.parse(maybeJson);
+    } catch (err) {
+        log.debug(`JSON parse failed: ${err.message}`);
+        return null;
+    }
+};
+
+const extractEmbeddedState = (html) => {
+    const patterns = [
+        /window\.__APOLLO_STATE__\s*=\s*({.*?})\s*;?/s,
+        /window\.__INITIAL_STATE__\s*=\s*({.*?})\s*;?/s,
+        /<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/s,
+        /<script[^>]+type="application\/json"[^>]*>(.*?)<\/script>/s,
+    ];
+
+    for (const pattern of patterns) {
+        const match = html.match(pattern);
+        if (match?.[1]) {
+            const parsed = safeJsonParse(match[1]);
+            if (parsed) return parsed;
+        }
+    }
+
+    return null;
+};
+
+const isListingLike = (obj) => {
+    if (!obj || typeof obj !== 'object') return false;
+    return Boolean(
+        obj.listingId ||
+            obj.listingSlug ||
+            obj.id ||
+            obj.propertyDetails ||
+            obj.address ||
+            obj.addressParts ||
+            obj.priceDetails ||
+            obj.media ||
+            obj.url,
+    );
+};
+
+const locateListingArray = (payload) => {
+    const visited = new Set();
+    const queue = [payload];
+
+    while (queue.length) {
+        const current = queue.shift();
+        if (!current) continue;
+        if (typeof current === 'object') {
+            if (visited.has(current)) continue;
+            visited.add(current);
+        }
+
+        if (Array.isArray(current)) {
+            const listingCandidates = current.filter(isListingLike);
+            if (listingCandidates.length > 0) return listingCandidates;
+        }
+
+        if (current && typeof current === 'object') {
+            for (const value of Object.values(current)) {
+                if (value && (typeof value === 'object' || Array.isArray(value))) {
+                    queue.push(value);
+                }
+            }
+        }
+    }
+
+    return [];
+};
+
+const normalizeListingFromJson = (rawListing) => {
+    const listing = rawListing?.listing || rawListing;
+    if (!listing || typeof listing !== 'object') return null;
+
+    const propertyDetails = listing.propertyDetails || listing.property || listing.details || {};
+    const address = listing.address || listing.addressParts || propertyDetails.address || propertyDetails.addressParts || {};
+    const advertiser = listing.advertiser || listing.agency || listing.agencyDetails || {};
+    const priceDetails = listing.priceDetails || listing.pricing || listing.price || {};
+    const geo = listing.geoLocation || listing.geo || listing.location || {};
+    const media = listing.media || listing.mediaItems || listing.images || {};
+
+    const urlCandidate =
+        listing.url ||
+        listing.listingUrl ||
+        listing.canonicalUrl ||
+        (listing.listingSlug ? ensureAbsoluteUrl(listing.listingSlug) : null);
+
+    const property = {
+        id: String(listing.id || listing.listingId || propertyDetails.id || listing.listingSlug || '') || null,
+        url: ensureAbsoluteUrl(urlCandidate),
+        address: listing.displayAddress || address.displayAddress || address.street || address.streetAddress || null,
+        suburb: address.suburb || address.locality || address.suburbName || null,
+        state: address.state || address.stateAbbreviation || address.region || null,
+        postcode: address.postcode || address.postalCode || null,
+        price: extractPriceFromText(
+            priceDetails.displayPrice || priceDetails.priceText || priceDetails.price || listing.priceText,
+        ),
+        propertyType: propertyDetails.propertyType || listing.propertyType || null,
+        beds: propertyDetails.bedrooms ?? propertyDetails.beds ?? listing.beds ?? null,
+        baths: propertyDetails.bathrooms ?? listing.bathrooms ?? null,
+        parking: propertyDetails.carspaces ?? propertyDetails.parkingSpaces ?? listing.carspaces ?? listing.parking ?? null,
+        landSize:
+            propertyDetails.landArea || propertyDetails.landSize
+                ? `${propertyDetails.landArea || propertyDetails.landSize}m2`
+                : null,
+        imageUrl:
+            listing.imageUrl ||
+            (Array.isArray(media) ? media[0] : media.images?.[0]?.url || media[0]?.url) ||
+            media?.mainImage?.url ||
+            null,
+        agent: advertiser.contacts?.[0]?.name || advertiser.agent || listing.agent || null,
+        agency: advertiser.primaryAgency?.name || advertiser.agencyName || advertiser.name || null,
+        latitude: geo.latitude || geo.lat || null,
+        longitude: geo.longitude || geo.lon || null,
+        isNew: Boolean(listing.isNew || listing.newListing || listing.tags?.includes('new')),
+        source: DOMAIN_BASE,
+        scrapedAt: new Date().toISOString(),
+    };
+
+    if (!property.imageUrl && Array.isArray(media?.images) && media.images.length > 0) {
+        property.imageUrl = media.images[0].url || media.images[0];
+    }
+
+    if (!property.id && property.url) {
+        const idMatch = property.url.match(/(\d+)/);
+        if (idMatch) property.id = idMatch[1];
+    }
+
+    return property.url ? property : null;
+};
+
+const deriveNextPageUrl = ({ url, currentPage }) => {
+    try {
+        const parsed = new URL(url);
+        const current = currentPage || parseInt(parsed.searchParams.get('page') || '1', 10) || 1;
+        parsed.searchParams.set('page', current + 1);
+        if (!parsed.searchParams.get('pageSize')) parsed.searchParams.set('pageSize', String(DEFAULT_PAGE_SIZE));
+        return parsed.toString();
+    } catch (err) {
+        log.debug(`Could not derive next page: ${err.message}`);
+        return null;
+    }
+};
+
+const extractTotalResults = (payload) => {
+    const candidates = [
+        payload?.totalResults,
+        payload?.results?.total,
+        payload?.data?.total,
+        payload?.paging?.total,
+        payload?.pagination?.total,
+    ];
+    return candidates.find((val) => typeof val === 'number') || null;
+};
+
+const extractListingsFromJsonPayload = ({ payload, sourceUrl, currentPage }) => {
+    const listingsArray = locateListingArray(payload);
+    const properties = listingsArray
+        .map((item) => normalizeListingFromJson(item))
+        .filter((item) => item && item.url);
+
+    const totalResults = extractTotalResults(payload);
+
+    let nextPage = null;
+    const pagingCandidates = [payload?.paging, payload?.pagination, payload?.results?.paging, payload?.data?.paging];
+    for (const paging of pagingCandidates) {
+        if (paging?.next) {
+            nextPage = ensureAbsoluteUrl(paging.next);
+            break;
+        }
+        if (paging?.nextPage) {
+            nextPage = ensureAbsoluteUrl(paging.nextPage);
+            break;
+        }
+    }
+
+    if (!nextPage && properties.length > 0) {
+        nextPage = deriveNextPageUrl({ url: sourceUrl, currentPage });
+    }
+
+    return { properties, totalResults, nextPage };
+};
+
+const createJsonApiCandidates = (url, page) => {
+    const candidates = new Set();
+
+    try {
+        const parsed = new URL(url);
+        const params = new URLSearchParams(parsed.search);
+        params.set('page', String(page));
+        if (!params.get('pageSize')) params.set('pageSize', String(DEFAULT_PAGE_SIZE));
+
+        const listingType =
+            params.get('listingType') ||
+            (parsed.pathname.toLowerCase().includes('/rent') ? 'Rent' : 'Sale');
+        params.set('listingType', listingType);
+
+        const query = params.toString();
+        candidates.add(`${DOMAIN_BASE}/srp/api/search?${query}`);
+        candidates.add(`${DOMAIN_BASE}/srp/api/listings?${query}`);
+        candidates.add(`${DOMAIN_BASE}/map/api/search?${query}`);
+    } catch (err) {
+        log.debug(`Failed to build API candidates: ${err.message}`);
+    }
+
+    return Array.from(candidates);
+};
+
+const fetchListingsViaJsonApi = async ({ url, page, proxyConfiguration }) => {
+    const apiCandidates = createJsonApiCandidates(url, page);
+    for (const apiUrl of apiCandidates) {
+        try {
+            const response = await gotScraping({
+                url: apiUrl,
+                headers: createStealthHeaders(),
+                responseType: 'text',
+                proxyUrl: proxyConfiguration ? await proxyConfiguration.newUrl() : undefined,
+                retry: {
+                    limit: 2,
+                    statusCodes: [408, 429, 500, 502, 503, 504],
+                },
+                timeout: { request: 30000 },
+            });
+
+            const payload = safeJsonParse(response.body);
+            if (!payload) continue;
+
+            const extracted = extractListingsFromJsonPayload({
+                payload,
+                sourceUrl: url,
+                currentPage: page,
+            });
+
+            if (extracted.properties.length > 0) {
+                log.info(`? JSON API succeeded via ${apiUrl} with ${extracted.properties.length} listings`);
+                return { ...extracted, apiUrl, properties: extracted.properties.map(addMetadata) };
+            }
+        } catch (err) {
+            log.debug(`JSON API candidate failed (${apiUrl}): ${err.message}`);
+        }
+    }
+
+    return { properties: [], nextPage: null, totalResults: null };
+};
+
+const addMetadata = (property) => {
+    if (!property) return property;
+    if (!property.imageUrl && Array.isArray(property.images) && property.images.length) {
+        property.imageUrl = property.images[0];
+    }
+    property.scrapedAt = property.scrapedAt || new Date().toISOString();
+    property.source = property.source || DOMAIN_BASE;
+    return property;
+};
+
+// ============================================================================
 // HTML PARSING METHOD
 // ============================================================================
 
-const scrapeListingPage = async ({ url, proxyConfiguration, html = null }) => {
+const scrapeListingPage = async ({ url, proxyConfiguration, html = null, currentPage = 1 }) => {
     try {
         log.info(`Scraping listing page: ${url}`);
         
         let pageHtml = html;
         
         if (!pageHtml) {
-            const userAgent = getRandomUserAgent();
-            const headers = { ...STEALTHY_HEADERS, 'User-Agent': userAgent };
+            const headers = createStealthHeaders();
 
             const response = await gotScraping({
                 url,
@@ -211,12 +483,23 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null }) => {
             pageHtml = response.body;
         }
 
+        const embeddedState = extractEmbeddedState(pageHtml);
+        if (embeddedState) {
+            const embeddedResult = extractListingsFromJsonPayload({
+                payload: embeddedState,
+                sourceUrl: url,
+                currentPage,
+            });
+            if (embeddedResult.properties.length > 0) {
+                log.info(`? Extracted ${embeddedResult.properties.length} listings from embedded JSON`);
+                embeddedResult.properties = embeddedResult.properties.map(addMetadata);
+                return embeddedResult;
+            }
+        }
+
         const $ = cheerioLoad(pageHtml);
         const properties = [];
 
-        // Extract JSON-LD data first (best quality)
-        const jsonLdData = extractJsonLd(pageHtml);
-        
         // Validate we got HTML content
         if (pageHtml.includes('403 Forbidden') || pageHtml.length < 1000) {
             log.warning('⚠️ Possible blocking or incomplete page received');
@@ -321,7 +604,7 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null }) => {
                 const isNew = $card.text().includes('New') || $card.find('[class*="new"], [class*="badge"]').length > 0;
                 property.isNew = isNew;
 
-                properties.push(property);
+                properties.push(addMetadata(property));
                 log.debug(`✅ Extracted property: ${property.address} - $${property.price}`);
                 
             } catch (err) {
@@ -371,7 +654,7 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null }) => {
 // PLAYWRIGHT BROWSER METHOD
 // ============================================================================
 
-const scrapeViaPlaywright = async ({ url, proxyConfiguration }) => {
+const scrapeViaPlaywright = async ({ url, proxyConfiguration, currentPage = 1 }) => {
     let browser;
     let context;
     
@@ -437,7 +720,7 @@ const scrapeViaPlaywright = async ({ url, proxyConfiguration }) => {
         await browser.close();
 
         // Parse with cheerio
-        return await scrapeListingPage({ url, proxyConfiguration, html });
+        return await scrapeListingPage({ url, proxyConfiguration, html, currentPage });
     } catch (error) {
         log.error(`Playwright scraping failed: ${error.message}`);
         if (browser) {
@@ -459,8 +742,7 @@ const scrapePropertyDetails = async ({ url, proxyConfiguration }) => {
     try {
         log.info(`Scraping property details: ${url}`);
         
-        const userAgent = getRandomUserAgent();
-        const headers = { ...STEALTHY_HEADERS, 'User-Agent': userAgent };
+        const headers = createStealthHeaders();
 
         const response = await gotScraping({
             url,
@@ -483,6 +765,18 @@ const scrapePropertyDetails = async ({ url, proxyConfiguration }) => {
         
         if (jsonLdProperty) {
             Object.assign(details, jsonLdProperty);
+        }
+
+        const embeddedState = extractEmbeddedState(response.body);
+        if (embeddedState) {
+            const embeddedDetails = extractListingsFromJsonPayload({
+                payload: embeddedState,
+                sourceUrl: url,
+                currentPage: 1,
+            });
+            if (embeddedDetails.properties.length > 0) {
+                Object.assign(details, embeddedDetails.properties[0]);
+            }
         }
 
         // Extract description
@@ -548,6 +842,12 @@ const scrapePropertyDetails = async ({ url, proxyConfiguration }) => {
         // Extract property type
         const propertyType = cleanText($('[data-testid="listing-summary-property-type"]').text());
         if (propertyType) details.propertyType = propertyType;
+
+        if (details.numberOfBedrooms && !details.beds) details.beds = details.numberOfBedrooms;
+        if (details.numberOfBathroomsTotal && !details.baths) details.baths = details.numberOfBathroomsTotal;
+        if (details.images?.length && !details.imageUrl) details.imageUrl = details.images[0];
+        details.scrapedAt = details.scrapedAt || new Date().toISOString();
+        details.source = details.source || DOMAIN_BASE;
 
         return details;
     } catch (error) {
@@ -651,46 +951,42 @@ Actor.main(async () => {
 
     // Scraping loop
     while (nextPageUrl && allProperties.length < validatedMaxResults && currentPage <= validatedMaxPages) {
-        log.info(`📄 Page ${currentPage}/${validatedMaxPages} - Collected: ${allProperties.length}/${validatedMaxResults}`, { url: nextPageUrl });
+        log.info(
+            `📄 Page ${currentPage}/${validatedMaxPages} - Collected: ${allProperties.length}/${validatedMaxResults}`,
+            { url: nextPageUrl },
+        );
 
-        let result;
-        
-        try {
-            // Primary method: Try HTML parsing (fast)
-            result = await scrapeListingPage({ 
-                url: nextPageUrl, 
-                proxyConfiguration 
+        let result = await fetchListingsViaJsonApi({
+            url: nextPageUrl,
+            page: currentPage,
+            proxyConfiguration,
+        });
+
+        if (!result || result.properties.length === 0) {
+            log.warning(`⚠️ JSON API returned no results on page ${currentPage}, falling back to HTML.`);
+            result = await scrapeListingPage({
+                url: nextPageUrl,
+                proxyConfiguration,
+                currentPage,
             });
-            
-            if (!result || result.properties.length === 0) {
-                log.warning(`⚠️  HTML parsing returned no results on page ${currentPage}`);
-                
-                // Fallback to Playwright (browser automation)
-                log.info(`🌐 Attempting Playwright fallback...`);
-                result = await scrapeViaPlaywright({ 
-                    url: nextPageUrl, 
-                    proxyConfiguration 
-                });
-            }
-        } catch (error) {
-            log.error(`❌ Scraping error: ${error.message}`);
-            
-            // Try Playwright as last resort
-            try {
-                log.info(`🌐 Attempting Playwright fallback...`);
-                result = await scrapeViaPlaywright({ 
-                    url: nextPageUrl, 
-                    proxyConfiguration 
-                });
-            } catch (playwrightError) {
-                log.error(`❌ Both methods failed. ${playwrightError.message}`);
-                break;
-            }
+        }
+
+        if (!result || result.properties.length === 0) {
+            log.info(`🌐 Attempting Playwright fallback...`);
+            result = await scrapeViaPlaywright({
+                url: nextPageUrl,
+                proxyConfiguration,
+                currentPage,
+            });
         }
 
         if (!result || result.properties.length === 0) {
             log.warning(`❌ No properties found on page ${currentPage}, stopping pagination`);
             break;
+        }
+
+        if (!result.nextPage && result.properties.length > 0) {
+            result.nextPage = deriveNextPageUrl({ url: nextPageUrl, currentPage });
         }
 
         if (result.totalResults && !totalResultsCount) {
@@ -701,12 +997,11 @@ Actor.main(async () => {
         // Deduplicate and add properties
         let addedThisPage = 0;
         for (const property of result.properties) {
-            if (!property.id || seenIds.has(property.id)) {
-                continue;
-            }
-            
-            seenIds.add(property.id);
-            allProperties.push(property);
+            const dedupeKey = property.id || property.url;
+            if (!dedupeKey || seenIds.has(dedupeKey)) continue;
+
+            seenIds.add(dedupeKey);
+            allProperties.push(addMetadata(property));
             addedThisPage++;
 
             if (allProperties.length >= validatedMaxResults) break;
@@ -719,7 +1014,7 @@ Actor.main(async () => {
 
         // Rate limiting: human-like delays
         if (nextPageUrl && allProperties.length < validatedMaxResults) {
-            const delay = 1500 + Math.random() * 2000;
+            const delay = 1200 + Math.random() * 1800;
             log.debug(`⏳ Rate limiting: ${Math.round(delay)}ms before next page`);
             await sleep(delay);
         }
