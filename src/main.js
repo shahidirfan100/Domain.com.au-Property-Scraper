@@ -1134,6 +1134,11 @@ Actor.main(async () => {
     let currentPage = 1;
     let nextPageUrl = searchUrl;
     let totalResultsCount = null;
+    const datasetPusher = createDatasetPusher(DATASET_BATCH_SIZE);
+    const maxDetailConcurrency = 3;
+    const detailLimiter = collectDetails ? createConcurrencyLimiter(maxDetailConcurrency) : null;
+    const detailTasks = [];
+    let detailsCollected = 0;
 
     // Scraping loop
     while (nextPageUrl && allProperties.length < validatedMaxResults && currentPage <= pageLimit) {
@@ -1173,18 +1178,49 @@ Actor.main(async () => {
 
         // Deduplicate and add properties
         let addedThisPage = 0;
+        const newItemsThisPage = [];
         for (const property of result.properties) {
             const dedupeKey = property.id || property.url;
             if (!dedupeKey || seenIds.has(dedupeKey)) continue;
 
             seenIds.add(dedupeKey);
-            allProperties.push(addMetadata(property));
+            const normalized = addMetadata(property);
+            allProperties.push(normalized);
+            newItemsThisPage.push({ ...normalized });
             addedThisPage++;
+
+            if (collectDetails && detailLimiter) {
+                detailTasks.push(
+                    detailLimiter(async () => {
+                        try {
+                            if (!normalized.url || !isLikelyListingUrl(normalized.url)) return;
+                            const details = await scrapePropertyDetails({
+                                url: normalized.url,
+                                proxyConfiguration: proxyConfig,
+                            });
+
+                            for (const [key, value] of Object.entries(details)) {
+                                if (value && !normalized[key]) normalized[key] = value;
+                            }
+
+                            detailsCollected++;
+                            datasetPusher.enqueue({ ...addMetadata(normalized) });
+                            await sleep(150 + Math.random() * 350);
+                        } catch (error) {
+                            log.warning(`⚠️  Failed details for ${normalized.url}: ${error.message}`);
+                            datasetPusher.enqueue({ ...addMetadata(normalized) });
+                        }
+                    }),
+                );
+            }
 
             if (allProperties.length >= validatedMaxResults) break;
         }
 
         log.info(`✅ Added ${addedThisPage} unique properties (${allProperties.length}/${validatedMaxResults} total)`);
+        if (!collectDetails && newItemsThisPage.length) {
+            datasetPusher.enqueue(newItemsThisPage);
+        }
 
         nextPageUrl = result.nextPage;
         currentPage++;
@@ -1197,59 +1233,13 @@ Actor.main(async () => {
         }
     }
 
-    // Collect detailed information for each property
     if (collectDetails && allProperties.length > 0) {
         log.info(`📋 Collecting full details for ${allProperties.length} properties...`);
-
-        const maxConcurrency = 3; // Moderate concurrency for faster details without heavy load
-        const limiter = createConcurrencyLimiter(maxConcurrency);
-        
-        let detailsCollected = 0;
-        const detailPromises = allProperties.map((property, idx) => 
-            limiter(async () => {
-                try {
-                    if (!property.url || !isLikelyListingUrl(property.url)) {
-                        log.debug(`⏭️  Skipping details for invalid URL: ${property.url || 'null'}`);
-                        return;
-                    }
-
-                    log.debug(`[${idx + 1}/${allProperties.length}] Fetching details: ${property.address}`);
-                    
-                    const details = await scrapePropertyDetails({
-                        url: property.url,
-                        proxyConfiguration: proxyConfig,
-                    });
-
-                    // Merge details with listing data (prefer existing data)
-                    for (const [key, value] of Object.entries(details)) {
-                        if (value && !property[key]) {
-                            property[key] = value;
-                        }
-                    }
-                    
-                    detailsCollected++;
-
-                    // Random delay to avoid rate limiting
-                    await sleep(150 + Math.random() * 350);
-                } catch (error) {
-                    log.warning(`⚠️  Failed details for ${property.url}: ${error.message}`);
-                }
-            })
-        );
-
-        await Promise.all(detailPromises);
+        await Promise.all(detailTasks);
+        await datasetPusher.flush();
         log.info(`✅ Details collected for ${detailsCollected}/${allProperties.length} properties`);
-    }
-
-    // Save results
-        // Flush in batches during the run to avoid saving only at the end
-        if (allProperties.length % DATASET_BATCH_SIZE === 0 || !nextPageUrl || allProperties.length >= validatedMaxResults) {
-            await pushDataInBatches(allProperties.splice(0, DATASET_BATCH_SIZE), DATASET_BATCH_SIZE);
-        }
-
-    // Final flush for any remaining items
-    if (allProperties.length) {
-        await pushDataInBatches(allProperties.splice(0, allProperties.length), DATASET_BATCH_SIZE);
+    } else {
+        await datasetPusher.flush();
     }
 
     // Final report
@@ -1292,11 +1282,31 @@ function createConcurrencyLimiter(maxConcurrency) {
     });
 }
 
-async function pushDataInBatches(items, batchSize) {
-    if (!items || items.length === 0) return;
+function createDatasetPusher(batchSize) {
     const size = Math.max(1, batchSize || DATASET_BATCH_SIZE);
-    for (let i = 0; i < items.length; i += size) {
-        const batch = items.slice(i, i + size);
-        await Dataset.pushData(batch);
-    }
+    const buffer = [];
+    let chain = Promise.resolve();
+
+    const enqueue = (items) => {
+        const list = Array.isArray(items) ? items : [items];
+        if (!list.length) return;
+
+        chain = chain.then(async () => {
+            buffer.push(...list);
+            while (buffer.length >= size) {
+                const batch = buffer.splice(0, size);
+                await Dataset.pushData(batch);
+            }
+        });
+    };
+
+    const flush = async () => {
+        await chain;
+        while (buffer.length) {
+            const batch = buffer.splice(0, size);
+            await Dataset.pushData(batch);
+        }
+    };
+
+    return { enqueue, flush };
 }
