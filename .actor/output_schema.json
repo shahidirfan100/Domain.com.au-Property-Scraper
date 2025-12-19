@@ -159,53 +159,5 @@
             "description": "Source of the data (domain.com.au)",
             "template": "{{value}}"
         }
-    },
-    "views": {
-        "overview": {
-            "title": "Property Overview",
-            "transformation": {
-                "fields": [
-                    "address",
-                    "suburb",
-                    "state",
-                    "price",
-                    "propertyType",
-                    "beds",
-                    "baths",
-                    "parking",
-                    "agency",
-                    "url"
-                ]
-            },
-            "display": {
-                "component": "table",
-                "properties": {
-                    "address": {
-                        "label": "Address",
-                        "format": "text"
-                    },
-                    "price": {
-                        "label": "Price",
-                        "format": "text"
-                    },
-                    "propertyType": {
-                        "label": "Type",
-                        "format": "text"
-                    },
-                    "beds": {
-                        "label": "Beds",
-                        "format": "text"
-                    },
-                    "baths": {
-                        "label": "Baths",
-                        "format": "text"
-                    },
-                    "url": {
-                        "label": "View",
-                        "format": "link"
-                    }
-                }
-            }
-        }
     }
 }

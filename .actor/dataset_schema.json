@@ -44,15 +44,15 @@
           },
           "beds": {
             "label": "Beds",
-            "format": "number"
+            "format": "text"
           },
           "baths": {
             "label": "Baths",
-            "format": "number"
+            "format": "text"
           },
           "parking": {
             "label": "Parking",
-            "format": "number"
+            "format": "text"
           },
           "landSize": {
             "label": "Land Size",
@@ -113,11 +113,11 @@
           },
           "beds": {
             "label": "Beds",
-            "format": "number"
+            "format": "text"
           },
           "baths": {
             "label": "Baths",
-            "format": "number"
+            "format": "text"
           },
           "description": {
             "label": "Description",
