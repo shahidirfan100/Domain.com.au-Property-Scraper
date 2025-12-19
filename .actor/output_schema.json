@@ -6,132 +6,158 @@
         "id": {
             "type": "string",
             "title": "Property ID",
-            "description": "Unique identifier for the property listing"
+            "description": "Unique identifier for the property listing",
+            "template": "{{value}}"
         },
         "url": {
             "type": "string",
             "title": "Property URL",
-            "description": "Full URL to the property listing on Domain.com.au"
+            "description": "Full URL to the property listing on Domain.com.au",
+            "template": "{{value}}"
         },
         "address": {
             "type": "string",
             "title": "Address",
-            "description": "Complete street address of the property"
+            "description": "Complete street address of the property",
+            "template": "{{value}}"
         },
         "suburb": {
             "type": "string",
             "title": "Suburb",
-            "description": "Suburb/locality name"
+            "description": "Suburb/locality name",
+            "template": "{{value}}"
         },
         "state": {
             "type": "string",
             "title": "State",
-            "description": "Australian state (NSW, VIC, QLD, etc.)"
+            "description": "Australian state (NSW, VIC, QLD, etc.)",
+            "template": "{{value}}"
         },
         "postcode": {
             "type": "string",
             "title": "Postcode",
-            "description": "Australian postcode"
+            "description": "Australian postcode",
+            "template": "{{value}}"
         },
         "price": {
             "type": "string",
             "title": "Price",
-            "description": "Property price (may be range, fixed price, or text like 'Contact Agent')"
+            "description": "Property price (may be range, fixed price, or text like 'Contact Agent')",
+            "template": "{{value}}"
         },
         "propertyType": {
             "type": "string",
             "title": "Property Type",
-            "description": "Type of property (House, Apartment, Townhouse, etc.)"
+            "description": "Type of property (House, Apartment, Townhouse, etc.)",
+            "template": "{{value}}"
         },
         "beds": {
             "type": "integer",
             "title": "Bedrooms",
-            "description": "Number of bedrooms"
+            "description": "Number of bedrooms",
+            "template": "{{value}}"
         },
         "baths": {
             "type": "integer",
             "title": "Bathrooms",
-            "description": "Number of bathrooms"
+            "description": "Number of bathrooms",
+            "template": "{{value}}"
         },
         "parking": {
             "type": "integer",
             "title": "Parking Spaces",
-            "description": "Number of parking spaces"
+            "description": "Number of parking spaces",
+            "template": "{{value}}"
         },
         "landSize": {
             "type": "string",
             "title": "Land Size",
-            "description": "Size of land in square meters"
+            "description": "Size of land in square meters",
+            "template": "{{value}}"
         },
         "floorSize": {
             "type": "string",
             "title": "Floor Size",
-            "description": "Internal floor size in square meters"
+            "description": "Internal floor size in square meters",
+            "template": "{{value}}"
         },
         "description": {
             "type": "string",
             "title": "Description",
-            "description": "Full property description"
+            "description": "Full property description",
+            "template": "{{value}}"
         },
         "agent": {
             "type": "string",
             "title": "Agent Name",
-            "description": "Name of the listing agent"
+            "description": "Name of the listing agent",
+            "template": "{{value}}"
         },
         "agency": {
             "type": "string",
             "title": "Agency Name",
-            "description": "Name of the real estate agency"
+            "description": "Name of the real estate agency",
+            "template": "{{value}}"
         },
         "imageUrl": {
             "type": "string",
             "title": "Primary Image URL",
-            "description": "URL of the main property image"
+            "description": "URL of the main property image",
+            "template": "{{value}}"
         },
         "images": {
             "type": "array",
             "title": "All Images",
-            "description": "Array of all property image URLs"
+            "description": "Array of all property image URLs",
+            "template": "{{#each value}}<img src=\"{{this}}\" style=\"max-width:100px;max-height:100px;margin:2px;\"/>{{/each}}"
         },
         "latitude": {
             "type": "number",
             "title": "Latitude",
-            "description": "Geographic latitude coordinate"
+            "description": "Geographic latitude coordinate",
+            "template": "{{value}}"
         },
         "longitude": {
             "type": "number",
             "title": "Longitude",
-            "description": "Geographic longitude coordinate"
+            "description": "Geographic longitude coordinate",
+            "template": "{{value}}"
         },
         "inspectionTimes": {
             "type": "array",
             "title": "Inspection Times",
-            "description": "Scheduled inspection times for the property"
+            "description": "Scheduled inspection times for the property",
+            "template": "{{#each value}}{{this}}<br/>{{/each}}"
         },
         "features": {
             "type": "array",
             "title": "Property Features",
-            "description": "List of property features and amenities"
+            "description": "List of property features and amenities",
+            "template": "{{#each value}}• {{this}}<br/>{{/each}}"
         },
         "isNew": {
             "type": "boolean",
             "title": "New Listing",
-            "description": "Whether this is a newly listed property"
+            "description": "Whether this is a newly listed property",
+            "template": "{{#if value}}✅ New{{else}}📅 Existing{{/if}}"
         },
         "inspectionTime": {
             "type": "string",
             "title": "Next Inspection",
-            "description": "Next scheduled inspection time"
+            "description": "Next scheduled inspection time",
+            "template": "{{value}}"
         },
         "scrapedAt": {
             "type": "string",
             "title": "Scraped At",
-            "description": "ISO timestamp when the data was collected"
+            "description": "ISO timestamp when the data was collected",
+            "template": "{{value}}"
         },
         "source": {
             "type": "string",
             "title": "Data Source",
-            "description": "Source of the data (domain.com.au)"
+            "description": "Source of the data (domain.com.au)",
+            "template": "{{value}}"
         }
     },
     "views": {
