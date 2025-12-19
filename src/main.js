@@ -418,10 +418,10 @@ const fetchListingsViaJsonApi = async ({ url, page, proxyConfiguration }) => {
                 responseType: 'text',
                 proxyUrl: proxyConfiguration ? await proxyConfiguration.newUrl() : undefined,
                 retry: {
-                    limit: 2,
+                    limit: 1,
                     statusCodes: [408, 429, 500, 502, 503, 504],
                 },
-                timeout: { request: 30000 },
+                timeout: { request: 12000 },
             });
 
             const payload = safeJsonParse(response.body);
@@ -474,14 +474,19 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null, current
                 proxyUrl: proxyConfiguration ? await proxyConfiguration.newUrl() : undefined,
                 responseType: 'text',
                 retry: {
-                    limit: 3,
+                    limit: 2,
                     statusCodes: [408, 429, 500, 502, 503, 504],
                 },
-                timeout: { request: 60000 },
+                timeout: { request: 20000 },
             });
 
             pageHtml = response.body;
         }
+
+        const $ = cheerioLoad(pageHtml);
+        const properties = [];
+        let totalResults = null;
+        let nextPageCandidate = null;
 
         const embeddedState = extractEmbeddedState(pageHtml);
         if (embeddedState) {
@@ -492,13 +497,11 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null, current
             });
             if (embeddedResult.properties.length > 0) {
                 log.info(`? Extracted ${embeddedResult.properties.length} listings from embedded JSON`);
-                embeddedResult.properties = embeddedResult.properties.map(addMetadata);
-                return embeddedResult;
+                embeddedResult.properties.forEach((p) => properties.push(addMetadata(p)));
+                totalResults = embeddedResult.totalResults || totalResults;
+                nextPageCandidate = embeddedResult.nextPage || nextPageCandidate;
             }
         }
-
-        const $ = cheerioLoad(pageHtml);
-        const properties = [];
 
         // Validate we got HTML content
         if (pageHtml.includes('403 Forbidden') || pageHtml.length < 1000) {
@@ -614,34 +617,17 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null, current
 
         // Try to find pagination info
         let nextPageLink = $('a[aria-label="Go to next page"]').attr('href');
-        if (!nextPageLink) {
-            nextPageLink = $('a[rel="next"]').attr('href');
-        }
-        if (!nextPageLink) {
-            // Check for page number in URL and increment
-            const pageMatch = url.match(/[?&]page=(\d+)/);
-            if (pageMatch) {
-                const currentPage = parseInt(pageMatch[1]);
-                nextPageLink = url.replace(/page=\d+/, `page=${currentPage + 1}`);
-            } else if (url.includes('?')) {
-                nextPageLink = `${url}&page=2`;
-            } else {
-                nextPageLink = `${url}?page=2`;
-            }
-            
-            // Validate if we should use the next page
-            if (properties.length === 0) {
-                nextPageLink = null;
-            }
-        }
+        if (!nextPageLink) nextPageLink = $('a[rel="next"]').attr('href');
 
         const totalResultsText = cleanText($('[data-testid="summary-header-total-results"]').text());
         const totalMatch = totalResultsText?.match(/([\d,]+)/);
-        const totalResults = totalMatch ? parseInt(totalMatch[1].replace(/,/g, '')) : null;
+        if (totalMatch) totalResults = totalResults || parseInt(totalMatch[1].replace(/,/g, ''), 10);
+
+        const nextPage = ensureAbsoluteUrl(nextPageCandidate || nextPageLink) || deriveNextPageUrl({ url, currentPage });
 
         return {
             properties,
-            nextPage: nextPageLink ? ensureAbsoluteUrl(nextPageLink) : null,
+            nextPage,
             totalResults,
         };
     } catch (error) {
@@ -869,6 +855,7 @@ Actor.main(async () => {
         maxPages = 5,
         collectDetails = true,
         proxyConfiguration,
+        enableBrowserFallback = false,
         location = null,
         propertyType = null,
         minPrice = null,
@@ -974,12 +961,16 @@ Actor.main(async () => {
         }
 
         if (!result || result.properties.length === 0) {
-            log.info(`🌐 Attempting Playwright fallback...`);
-            result = await scrapeViaPlaywright({
-                url: nextPageUrl,
-                proxyConfiguration: proxyConfig,
-                currentPage,
-            });
+            if (enableBrowserFallback) {
+                log.info(`🌐 Attempting Playwright fallback...`);
+                result = await scrapeViaPlaywright({
+                    url: nextPageUrl,
+                    proxyConfiguration: proxyConfig,
+                    currentPage,
+                });
+            } else {
+                log.info('🧭 Browser fallback disabled; skipping Playwright for speed/cost.');
+            }
         }
 
         if (!result || result.properties.length === 0) {
@@ -1016,7 +1007,7 @@ Actor.main(async () => {
 
         // Rate limiting: human-like delays
         if (nextPageUrl && allProperties.length < validatedMaxResults) {
-            const delay = 1200 + Math.random() * 1800;
+            const delay = 800 + Math.random() * 1200;
             log.debug(`⏳ Rate limiting: ${Math.round(delay)}ms before next page`);
             await sleep(delay);
         }
@@ -1026,7 +1017,7 @@ Actor.main(async () => {
     if (collectDetails && allProperties.length > 0) {
         log.info(`📋 Collecting full details for ${allProperties.length} properties...`);
 
-        const maxConcurrency = 3; // Fixed concurrency for stable operation
+        const maxConcurrency = 2; // Lower concurrency to stay stealthy/cost-effective
         const limiter = createConcurrencyLimiter(maxConcurrency);
         
         let detailsCollected = 0;
