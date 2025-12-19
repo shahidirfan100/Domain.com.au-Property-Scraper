@@ -1,0 +1,134 @@
+{
+  "actorSpecification": 1,
+  "fields": {},
+  "views": {
+    "overview": {
+      "title": "Overview",
+      "transformation": {
+        "fields": [
+          "address",
+          "suburb",
+          "state",
+          "price",
+          "propertyType",
+          "beds",
+          "baths",
+          "parking",
+          "landSize",
+          "agency",
+          "url"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "address": {
+            "label": "Address",
+            "format": "text"
+          },
+          "suburb": {
+            "label": "Suburb",
+            "format": "text"
+          },
+          "state": {
+            "label": "State",
+            "format": "text"
+          },
+          "price": {
+            "label": "Price",
+            "format": "text"
+          },
+          "propertyType": {
+            "label": "Type",
+            "format": "text"
+          },
+          "beds": {
+            "label": "Beds",
+            "format": "number"
+          },
+          "baths": {
+            "label": "Baths",
+            "format": "number"
+          },
+          "parking": {
+            "label": "Parking",
+            "format": "number"
+          },
+          "landSize": {
+            "label": "Land Size",
+            "format": "text"
+          },
+          "agency": {
+            "label": "Agency",
+            "format": "text"
+          },
+          "url": {
+            "label": "View Listing",
+            "format": "link"
+          }
+        }
+      }
+    },
+    "full": {
+      "title": "Full Details",
+      "transformation": {
+        "fields": [
+          "id",
+          "address",
+          "suburb",
+          "state",
+          "postcode",
+          "price",
+          "propertyType",
+          "beds",
+          "baths",
+          "parking",
+          "landSize",
+          "description",
+          "agent",
+          "agency",
+          "inspectionTimes",
+          "features",
+          "latitude",
+          "longitude",
+          "imageUrl",
+          "url",
+          "scrapedAt"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "address": {
+            "label": "Address",
+            "format": "text"
+          },
+          "price": {
+            "label": "Price",
+            "format": "text"
+          },
+          "propertyType": {
+            "label": "Type",
+            "format": "text"
+          },
+          "beds": {
+            "label": "Beds",
+            "format": "number"
+          },
+          "baths": {
+            "label": "Baths",
+            "format": "number"
+          },
+          "description": {
+            "label": "Description",
+            "format": "text"
+          },
+          "url": {
+            "label": "View Listing",
+            "format": "link"
+          }
+        }
+      }
+    }
+  }
+}

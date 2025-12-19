@@ -1,0 +1,809 @@
+// Domain.com.au Property Scraper - Modern Multi-Method Extraction
+import { Actor, log } from 'apify';
+import { Dataset, gotScraping } from 'crawlee';
+import { chromium } from 'playwright';
+import { load as cheerioLoad } from 'cheerio';
+
+// ============================================================================
+// CONSTANTS & CONFIGURATION
+// ============================================================================
+
+const DOMAIN_BASE = 'https://www.domain.com.au';
+
+// Stealthy User Agents rotation
+const USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
+];
+
+const STEALTHY_HEADERS = {
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept-Language': 'en-AU,en-US;q=0.9,en;q=0.8',
+    'DNT': '1',
+    'Referer': DOMAIN_BASE,
+    'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="121", "Google Chrome";v="121"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1',
+    'Cache-Control': 'max-age=0',
+};
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
+const getRandomUserAgent = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const cleanText = (text) => {
+    if (!text) return null;
+    return text.replace(/\s+/g, ' ').trim();
+};
+
+const ensureAbsoluteUrl = (url) => {
+    if (!url) return null;
+    if (url.startsWith('http')) return url;
+    return `${DOMAIN_BASE}${url.startsWith('/') ? '' : '/'}${url}`;
+};
+
+const extractPriceFromText = (text) => {
+    if (!text) return null;
+    
+    const cleanedText = cleanText(text);
+    
+    // Handle price ranges like "$500,000-$600,000" or "$500,000 - $600,000"
+    const rangeMatch = cleanedText.match(/\$?([\d,]+)\s*[-–to]\s*\$?([\d,]+)/i);
+    if (rangeMatch) {
+        const min = rangeMatch[1].replace(/,/g, '');
+        const max = rangeMatch[2].replace(/,/g, '');
+        return `$${parseInt(min).toLocaleString()}-$${parseInt(max).toLocaleString()}`;
+    }
+    
+    // Handle single prices like "$550,000"
+    const priceMatch = cleanedText.match(/\$?([\d,]+)/);
+    if (priceMatch) {
+        const price = priceMatch[1].replace(/,/g, '');
+        return `$${parseInt(price).toLocaleString()}`;
+    }
+    
+    // Contact agent, auction, etc.
+    return cleanedText;
+};
+
+const parsePropertyFeatures = ($elem) => {
+    const features = {
+        beds: null,
+        baths: null,
+        parking: null,
+        landSize: null,
+    };
+
+    // Try to find features from various selectors
+    const featureText = $elem.text();
+    
+    // Extract beds
+    const bedsMatch = featureText.match(/(\d+)\s*Bed/i);
+    if (bedsMatch) features.beds = parseInt(bedsMatch[1]);
+
+    // Extract baths
+    const bathsMatch = featureText.match(/(\d+)\s*Bath/i);
+    if (bathsMatch) features.baths = parseInt(bathsMatch[1]);
+
+    // Extract parking
+    const parkingMatch = featureText.match(/(\d+)\s*Parking/i);
+    if (parkingMatch) features.parking = parseInt(parkingMatch[1]);
+
+    // Extract land size
+    const landSizeMatch = featureText.match(/([\d,]+)\s*m²/i);
+    if (landSizeMatch) {
+        features.landSize = `${landSizeMatch[1]}m²`;
+    }
+
+    return features;
+};
+
+// ============================================================================
+// JSON-LD EXTRACTION
+// ============================================================================
+
+const extractJsonLd = (html) => {
+    const $ = cheerioLoad(html);
+    const scripts = $('script[type="application/ld+json"]');
+    const jsonLdData = [];
+
+    scripts.each((_, script) => {
+        try {
+            const content = $(script).html();
+            if (content) {
+                const data = JSON.parse(content);
+                if (Array.isArray(data)) {
+                    jsonLdData.push(...data);
+                } else {
+                    jsonLdData.push(data);
+                }
+            }
+        } catch (e) {
+            // Invalid JSON-LD, skip
+        }
+    });
+
+    return jsonLdData;
+};
+
+const parseJsonLdProperty = (jsonLd) => {
+    const property = {};
+
+    for (const data of jsonLd) {
+        const type = data['@type'];
+        
+        if (type === 'RealEstateListing' || type === 'SingleFamilyResidence' || 
+            type === 'House' || type === 'Apartment' || type === 'Product') {
+            
+            property.name = data.name || property.name;
+            
+            if (data.address) {
+                property.address = data.address.streetAddress || property.address;
+                property.suburb = data.address.addressLocality || property.suburb;
+                property.state = data.address.addressRegion || property.state;
+                property.postcode = data.address.postalCode || property.postcode;
+            }
+            
+            if (data.geo) {
+                property.latitude = data.geo.latitude;
+                property.longitude = data.geo.longitude;
+            }
+            
+            if (data.offers) {
+                const offers = Array.isArray(data.offers) ? data.offers[0] : data.offers;
+                property.price = offers.price || offers.priceSpecification?.price;
+                property.priceCurrency = offers.priceCurrency;
+            }
+            
+            property.description = data.description || property.description;
+            property.numberOfRooms = data.numberOfRooms || property.numberOfRooms;
+            property.floorSize = data.floorSize?.value || property.floorSize;
+            property.numberOfBedrooms = data.numberOfBedrooms || property.numberOfBedrooms;
+            property.numberOfBathroomsTotal = data.numberOfBathroomsTotal || property.numberOfBathroomsTotal;
+            
+            if (data.image) {
+                property.images = Array.isArray(data.image) ? data.image : [data.image];
+            }
+        }
+    }
+
+    return Object.keys(property).length > 0 ? property : null;
+};
+
+// ============================================================================
+// HTML PARSING METHOD
+// ============================================================================
+
+const scrapeListingPage = async ({ url, proxyConfiguration, html = null }) => {
+    try {
+        log.info(`Scraping listing page: ${url}`);
+        
+        let pageHtml = html;
+        
+        if (!pageHtml) {
+            const userAgent = getRandomUserAgent();
+            const headers = { ...STEALTHY_HEADERS, 'User-Agent': userAgent };
+
+            const response = await gotScraping({
+                url,
+                headers,
+                proxyUrl: proxyConfiguration ? await proxyConfiguration.newUrl() : undefined,
+                responseType: 'text',
+                retry: {
+                    limit: 3,
+                    statusCodes: [408, 429, 500, 502, 503, 504],
+                },
+                timeout: { request: 60000 },
+            });
+
+            pageHtml = response.body;
+        }
+
+        const $ = cheerioLoad(pageHtml);
+        const properties = [];
+
+        // Extract JSON-LD data first (best quality)
+        const jsonLdData = extractJsonLd(pageHtml);
+        
+        // Validate we got HTML content
+        if (pageHtml.includes('403 Forbidden') || pageHtml.length < 1000) {
+            log.warning('⚠️ Possible blocking or incomplete page received');
+        }
+
+        // Parse property cards from HTML - multiple selector strategies
+        let propertyCards = [];
+        
+        // Strategy 1: Try data-testid selectors (newer Domain interface)
+        propertyCards = $('[data-testid*="listing-card"]').toArray();
+        log.info(`[Strategy 1] Found ${propertyCards.length} cards with data-testid`);
+        
+        // Strategy 2: Try class-based selectors (common pattern)
+        if (propertyCards.length === 0) {
+            propertyCards = $('article.listing-card, article[class*="listing"], div[class*="property-card"]').toArray();
+            log.info(`[Strategy 2] Found ${propertyCards.length} cards with class selectors`);
+        }
+        
+        // Strategy 3: Try generic container selectors
+        if (propertyCards.length === 0) {
+            propertyCards = $('article, [role="listitem"]').toArray();
+            log.info(`[Strategy 3] Found ${propertyCards.length} cards with generic selectors`);
+        }
+
+        if (propertyCards.length === 0) {
+            log.warning('❌ No property cards found with any selector strategy');
+            log.debug(`Page HTML sample: ${pageHtml.substring(0, 500)}`);
+        }
+
+        for (const card of propertyCards) {
+            try {
+                const $card = $(card);
+                
+                const property = {};
+                
+                // Extract URL - multiple selector strategies
+                let linkElem = $card.find('a[href*="/property/"]').first();
+                if (!linkElem.length) linkElem = $card.find('a').first();
+                
+                property.url = ensureAbsoluteUrl(linkElem.attr('href'));
+                
+                if (!property.url || !property.url.includes('/property/')) {
+                    log.debug('⏭️  Skipping card: no valid property URL found');
+                    continue;
+                }
+
+                // Extract ID from URL
+                const idMatch = property.url.match(/-([\d]+)$/);
+                property.id = idMatch ? idMatch[1] : null;
+                
+                if (!property.id) {
+                    log.debug('⏭️  Skipping card: no property ID extracted');
+                    continue;
+                }
+
+                // Extract address - Strategy: Try multiple selectors
+                let addressText = cleanText($card.find('h2').first().text());
+                if (!addressText) addressText = cleanText($card.find('[class*="address"]').first().text());
+                if (!addressText) addressText = cleanText($card.find('div').eq(0).text());
+                property.address = addressText || null;
+
+                // Extract suburb
+                const suburbText = cleanText($card.find('[class*="suburb"], [class*="location"]').first().text());
+                property.suburb = suburbText || null;
+
+                // Extract price - try multiple selectors
+                let priceText = cleanText($card.find('[class*="price"]').first().text());
+                if (!priceText) {
+                    const allText = $card.text();
+                    const priceMatch = allText.match(/\$[\d,]+/);
+                    priceText = priceMatch ? priceMatch[0] : null;
+                }
+                property.price = extractPriceFromText(priceText);
+
+                // Extract property type
+                const typeText = cleanText($card.find('[class*="property-type"], [class*="type"]').first().text());
+                property.propertyType = typeText || null;
+
+                // Extract features
+                const features = parsePropertyFeatures($card);
+                property.beds = features.beds;
+                property.baths = features.baths;
+                property.parking = features.parking;
+                property.landSize = features.landSize;
+
+                // Extract agency name from logo alt text
+                const agencyImg = $card.find('img[alt*="Logo"], img[class*="logo"]').first();
+                const agencyAlt = agencyImg.attr('alt');
+                if (agencyAlt) {
+                    property.agency = agencyAlt.replace(/Logo for\s*/i, '').trim();
+                }
+
+                // Extract agent name
+                const agentName = cleanText($card.find('[class*="agent"], [class*="name"]').first().text());
+                property.agent = agentName || null;
+
+                // Extract image
+                const imgElem = $card.find('img[src*="domain"], img[src*="realestate"]').first();
+                property.imageUrl = imgElem.attr('src') || imgElem.attr('data-src') || null;
+
+                // Check if new listing
+                const isNew = $card.text().includes('New') || $card.find('[class*="new"], [class*="badge"]').length > 0;
+                property.isNew = isNew;
+
+                properties.push(property);
+                log.debug(`✅ Extracted property: ${property.address} - $${property.price}`);
+                
+            } catch (err) {
+                log.warning(`⚠️  Failed to parse property card: ${err.message}`);
+            }
+        }
+
+        // Try to find pagination info
+        let nextPageLink = $('a[aria-label="Go to next page"]').attr('href');
+        if (!nextPageLink) {
+            nextPageLink = $('a[rel="next"]').attr('href');
+        }
+        if (!nextPageLink) {
+            // Check for page number in URL and increment
+            const pageMatch = url.match(/[?&]page=(\d+)/);
+            if (pageMatch) {
+                const currentPage = parseInt(pageMatch[1]);
+                nextPageLink = url.replace(/page=\d+/, `page=${currentPage + 1}`);
+            } else if (url.includes('?')) {
+                nextPageLink = `${url}&page=2`;
+            } else {
+                nextPageLink = `${url}?page=2`;
+            }
+            
+            // Validate if we should use the next page
+            if (properties.length === 0) {
+                nextPageLink = null;
+            }
+        }
+
+        const totalResultsText = cleanText($('[data-testid="summary-header-total-results"]').text());
+        const totalMatch = totalResultsText?.match(/([\d,]+)/);
+        const totalResults = totalMatch ? parseInt(totalMatch[1].replace(/,/g, '')) : null;
+
+        return {
+            properties,
+            nextPage: nextPageLink ? ensureAbsoluteUrl(nextPageLink) : null,
+            totalResults,
+        };
+    } catch (error) {
+        log.error(`Failed to scrape listing page: ${error.message}`);
+        return { properties: [], nextPage: null, totalResults: null };
+    }
+};
+
+// ============================================================================
+// PLAYWRIGHT BROWSER METHOD
+// ============================================================================
+
+const scrapeViaPlaywright = async ({ url, proxyConfiguration }) => {
+    let browser;
+    let context;
+    
+    try {
+        log.info(`Scraping via Playwright: ${url}`);
+        
+        const launchOptions = {
+            headless: true,
+            args: [
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+            ],
+        };
+
+        if (proxyConfiguration) {
+            const proxyUrl = await proxyConfiguration.newUrl();
+            launchOptions.proxy = { server: proxyUrl };
+        }
+
+        browser = await chromium.launch(launchOptions);
+        context = await browser.newContext({
+            userAgent: getRandomUserAgent(),
+            viewport: { width: 1920, height: 1080 },
+            locale: 'en-AU',
+        });
+
+        const page = await context.newPage();
+        
+        // Navigate to page
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        
+        // Wait for content to load
+        try {
+            await page.waitForSelector('[data-testid="listing-card-wrapper"], .css-1qp9106', { timeout: 30000 });
+        } catch (e) {
+            log.warning('Timeout waiting for property cards, continuing anyway');
+        }
+        
+        // Scroll to load lazy images
+        await page.evaluate(async () => {
+            await new Promise((resolve) => {
+                let totalHeight = 0;
+                const distance = 300;
+                const timer = setInterval(() => {
+                    const scrollHeight = document.body.scrollHeight;
+                    window.scrollBy(0, distance);
+                    totalHeight += distance;
+
+                    if (totalHeight >= scrollHeight) {
+                        clearInterval(timer);
+                        resolve();
+                    }
+                }, 100);
+            });
+        });
+
+        // Get page content
+        const html = await page.content();
+        
+        await browser.close();
+
+        // Parse with cheerio
+        return await scrapeListingPage({ url, proxyConfiguration, html });
+    } catch (error) {
+        log.error(`Playwright scraping failed: ${error.message}`);
+        if (browser) {
+            try {
+                await browser.close();
+            } catch (e) {
+                // Ignore
+            }
+        }
+        return { properties: [], nextPage: null, totalResults: null };
+    }
+};
+
+// ============================================================================
+// DETAIL PAGE SCRAPING
+// ============================================================================
+
+const scrapePropertyDetails = async ({ url, proxyConfiguration }) => {
+    try {
+        log.info(`Scraping property details: ${url}`);
+        
+        const userAgent = getRandomUserAgent();
+        const headers = { ...STEALTHY_HEADERS, 'User-Agent': userAgent };
+
+        const response = await gotScraping({
+            url,
+            headers,
+            proxyUrl: proxyConfiguration ? await proxyConfiguration.newUrl() : undefined,
+            responseType: 'text',
+            retry: {
+                limit: 3,
+                statusCodes: [408, 429, 500, 502, 503, 504],
+            },
+            timeout: { request: 60000 },
+        });
+
+        const $ = cheerioLoad(response.body);
+        const details = {};
+
+        // Extract JSON-LD first
+        const jsonLdData = extractJsonLd(response.body);
+        const jsonLdProperty = parseJsonLdProperty(jsonLdData);
+        
+        if (jsonLdProperty) {
+            Object.assign(details, jsonLdProperty);
+        }
+
+        // Extract description
+        const descElem = $('[data-testid="listing-details__description"], [data-testid="listing-summary-description"]');
+        details.description = cleanText(descElem.text());
+
+        // Extract full address components
+        if (!details.address) {
+            details.address = cleanText($('[data-testid="listing-details__summary-title"]').text());
+        }
+
+        // Extract property features
+        const bedsElem = $('[data-testid="property-features-text-container"]:contains("Bed")');
+        const bathsElem = $('[data-testid="property-features-text-container"]:contains("Bath")');
+        const parkingElem = $('[data-testid="property-features-text-container"]:contains("Parking")');
+
+        if (bedsElem.length) {
+            const bedsMatch = bedsElem.text().match(/(\d+)/);
+            if (bedsMatch) details.numberOfBedrooms = parseInt(bedsMatch[1]);
+        }
+        if (bathsElem.length) {
+            const bathsMatch = bathsElem.text().match(/(\d+)/);
+            if (bathsMatch) details.numberOfBathroomsTotal = parseInt(bathsMatch[1]);
+        }
+        if (parkingElem.length) {
+            const parkingMatch = parkingElem.text().match(/(\d+)/);
+            if (parkingMatch) details.parking = parseInt(parkingMatch[1]);
+        }
+
+        // Extract inspection times
+        const inspectionTimes = [];
+        $('[data-testid="listing-details__inspection-button"]').each((_, elem) => {
+            const time = cleanText($(elem).text());
+            if (time) inspectionTimes.push(time);
+        });
+        details.inspectionTimes = inspectionTimes;
+
+        // Extract agent info
+        const agentName = cleanText($('[data-testid="listing-details__agent-name"]').text());
+        const agencyName = cleanText($('[data-testid="listing-details__agency-name"]').text());
+        
+        details.agent = agentName;
+        details.agency = agencyName;
+
+        // Extract all images
+        const images = [];
+        $('img[src*="domainstatic"]').each((_, img) => {
+            const src = $(img).attr('src');
+            if (src && !images.includes(src) && !src.includes('logo')) {
+                images.push(src);
+            }
+        });
+        details.images = images;
+
+        // Extract property features list
+        const featuresList = [];
+        $('[data-testid="listing-details__additional-features-listing"] li').each((_, elem) => {
+            const feature = cleanText($(elem).text());
+            if (feature) featuresList.push(feature);
+        });
+        details.features = featuresList;
+
+        // Extract property type
+        const propertyType = cleanText($('[data-testid="listing-summary-property-type"]').text());
+        if (propertyType) details.propertyType = propertyType;
+
+        return details;
+    } catch (error) {
+        log.error(`Failed to scrape property details: ${error.message}`);
+        return {};
+    }
+};
+
+// ============================================================================
+// MAIN ACTOR LOGIC
+// ============================================================================
+
+Actor.main(async () => {
+    const input = await Actor.getInput();
+    
+    const {
+        startUrl = 'https://www.domain.com.au/sale/?excludeunderoffer=1&sort=dateupdated-desc',
+        maxResults = 50,
+        maxPages = 5,
+        collectDetails = true,
+        proxyConfiguration,
+        location = null,
+        propertyType = null,
+        minPrice = null,
+        maxPrice = null,
+        minBeds = null,
+        state = null,
+        sortBy = 'dateupdated-desc',
+    } = input;
+
+    // ========================================================================
+    // INPUT VALIDATION
+    // ========================================================================
+    
+    const validatedMaxResults = Math.max(1, Math.min(maxResults || 50, 1000));
+    const validatedMaxPages = Math.max(1, Math.min(maxPages || 5, 50));
+    
+    if (!startUrl.includes('domain.com.au')) {
+        throw new Error('❌ Invalid input: startUrl must be from domain.com.au');
+    }
+
+    log.info('✅ Domain.com.au Property Scraper started', { 
+        startUrl, 
+        maxResults: validatedMaxResults, 
+        maxPages: validatedMaxPages,
+        collectDetails,
+    });
+
+    // Build search URL with filters
+    let searchUrl = startUrl;
+    
+    if (location || propertyType || minPrice || maxPrice || minBeds || state) {
+        let baseUrl = DOMAIN_BASE;
+        
+        if (state) {
+            baseUrl = `${DOMAIN_BASE}/sale/${state.toLowerCase()}/`;
+        } else if (location) {
+            baseUrl = `${DOMAIN_BASE}/sale/${location.toLowerCase().replace(/\s+/g, '-')}/`;
+        } else {
+            baseUrl = `${DOMAIN_BASE}/sale/`;
+        }
+        
+        const params = new URLSearchParams();
+        
+        if (propertyType) {
+            const typeMap = {
+                'house': 'House',
+                'apartment': 'ApartmentUnitFlat',
+                'townhouse': 'Townhouse',
+                'villa': 'Villa',
+                'land': 'VacantLand',
+            };
+            params.append('ptype', typeMap[propertyType.toLowerCase()] || propertyType);
+        }
+        
+        if (minPrice && maxPrice) {
+            params.append('price', `${minPrice}-${maxPrice}`);
+        } else if (minPrice) {
+            params.append('price', `${minPrice}-any`);
+        } else if (maxPrice) {
+            params.append('price', `any-${maxPrice}`);
+        }
+        
+        if (minBeds) {
+            params.append('bedrooms', minBeds);
+        }
+        
+        params.append('excludeunderoffer', '1');
+        params.append('sort', sortBy);
+        
+        searchUrl = `${baseUrl}?${params.toString()}`;
+    }
+
+    log.info(`🔍 Final search URL: ${searchUrl}`);
+
+    const allProperties = [];
+    const seenIds = new Set();
+    let currentPage = 1;
+    let nextPageUrl = searchUrl;
+    let totalResultsCount = null;
+
+    // Scraping loop
+    while (nextPageUrl && allProperties.length < validatedMaxResults && currentPage <= validatedMaxPages) {
+        log.info(`📄 Page ${currentPage}/${validatedMaxPages} - Collected: ${allProperties.length}/${validatedMaxResults}`, { url: nextPageUrl });
+
+        let result;
+        
+        try {
+            // Primary method: Try HTML parsing (fast)
+            result = await scrapeListingPage({ 
+                url: nextPageUrl, 
+                proxyConfiguration 
+            });
+            
+            if (!result || result.properties.length === 0) {
+                log.warning(`⚠️  HTML parsing returned no results on page ${currentPage}`);
+                
+                // Fallback to Playwright (browser automation)
+                log.info(`🌐 Attempting Playwright fallback...`);
+                result = await scrapeViaPlaywright({ 
+                    url: nextPageUrl, 
+                    proxyConfiguration 
+                });
+            }
+        } catch (error) {
+            log.error(`❌ Scraping error: ${error.message}`);
+            
+            // Try Playwright as last resort
+            try {
+                log.info(`🌐 Attempting Playwright fallback...`);
+                result = await scrapeViaPlaywright({ 
+                    url: nextPageUrl, 
+                    proxyConfiguration 
+                });
+            } catch (playwrightError) {
+                log.error(`❌ Both methods failed. ${playwrightError.message}`);
+                break;
+            }
+        }
+
+        if (!result || result.properties.length === 0) {
+            log.warning(`❌ No properties found on page ${currentPage}, stopping pagination`);
+            break;
+        }
+
+        if (result.totalResults && !totalResultsCount) {
+            totalResultsCount = result.totalResults;
+            log.info(`📊 Total available: ${totalResultsCount} properties`);
+        }
+
+        // Deduplicate and add properties
+        let addedThisPage = 0;
+        for (const property of result.properties) {
+            if (!property.id || seenIds.has(property.id)) {
+                continue;
+            }
+            
+            seenIds.add(property.id);
+            allProperties.push(property);
+            addedThisPage++;
+
+            if (allProperties.length >= validatedMaxResults) break;
+        }
+
+        log.info(`✅ Added ${addedThisPage} unique properties (${allProperties.length}/${validatedMaxResults} total)`);
+
+        nextPageUrl = result.nextPage;
+        currentPage++;
+
+        // Rate limiting: human-like delays
+        if (nextPageUrl && allProperties.length < validatedMaxResults) {
+            const delay = 1500 + Math.random() * 2000;
+            log.debug(`⏳ Rate limiting: ${Math.round(delay)}ms before next page`);
+            await sleep(delay);
+        }
+    }
+
+    // Collect detailed information for each property
+    if (collectDetails && allProperties.length > 0) {
+        log.info(`📋 Collecting full details for ${allProperties.length} properties...`);
+
+        const maxConcurrency = 3; // Fixed concurrency for stable operation
+        const limiter = createConcurrencyLimiter(maxConcurrency);
+        
+        let detailsCollected = 0;
+        const detailPromises = allProperties.map((property, idx) => 
+            limiter(async () => {
+                try {
+                    log.info(`[${idx + 1}/${allProperties.length}] Fetching details: ${property.address}`);
+                    
+                    const details = await scrapePropertyDetails({
+                        url: property.url,
+                        proxyConfiguration,
+                    });
+
+                    // Merge details with listing data (prefer existing data)
+                    for (const [key, value] of Object.entries(details)) {
+                        if (value && !property[key]) {
+                            property[key] = value;
+                        }
+                    }
+                    
+                    detailsCollected++;
+
+                    // Random delay to avoid rate limiting
+                    await sleep(800 + Math.random() * 1200);
+                } catch (error) {
+                    log.warning(`⚠️  Failed details for ${property.url}: ${error.message}`);
+                }
+            })
+        );
+
+        await Promise.all(detailPromises);
+        log.info(`✅ Details collected for ${detailsCollected}/${allProperties.length} properties`);
+    }
+
+    // Save results
+    log.info(`💾 Saving ${allProperties.length} properties to dataset...`);
+    await Dataset.pushData(allProperties);
+
+    // Final report
+    log.info('═'.repeat(70));
+    log.info('✅ SCRAPING COMPLETED SUCCESSFULLY');
+    log.info('═'.repeat(70));
+    log.info(`📊 Properties scraped: ${allProperties.length}/${validatedMaxResults}`);
+    log.info(`📄 Pages processed: ${currentPage - 1}/${validatedMaxPages}`);
+    log.info(`🎯 Details collected: ${collectDetails ? 'YES' : 'NO'}`);
+    log.info(`📈 Total available: ${totalResultsCount || 'Unknown'}`);
+    log.info('═'.repeat(70));
+});
+
+// ============================================================================
+// HELPER: Concurrency Limiter
+// ============================================================================
+
+function createConcurrencyLimiter(maxConcurrency) {
+    let active = 0;
+    const queue = [];
+
+    const next = () => {
+        if (active >= maxConcurrency || queue.length === 0) return;
+        
+        active++;
+        const { task, resolve, reject } = queue.shift();
+        
+        task()
+            .then(resolve)
+            .catch(reject)
+            .finally(() => {
+                active--;
+                next();
+            });
+    };
+
+    return (task) => new Promise((resolve, reject) => {
+        queue.push({ task, resolve, reject });
+        next();
+    });
+}

@@ -1,0 +1,185 @@
+{
+    "actorOutputSchemaVersion": 1,
+    "title": "Domain.com.au Property Data",
+    "description": "Comprehensive Australian real estate property data including prices, features, and location details",
+    "properties": {
+        "id": {
+            "type": "string",
+            "title": "Property ID",
+            "description": "Unique identifier for the property listing"
+        },
+        "url": {
+            "type": "string",
+            "title": "Property URL",
+            "description": "Full URL to the property listing on Domain.com.au"
+        },
+        "address": {
+            "type": "string",
+            "title": "Address",
+            "description": "Complete street address of the property"
+        },
+        "suburb": {
+            "type": "string",
+            "title": "Suburb",
+            "description": "Suburb/locality name"
+        },
+        "state": {
+            "type": "string",
+            "title": "State",
+            "description": "Australian state (NSW, VIC, QLD, etc.)"
+        },
+        "postcode": {
+            "type": "string",
+            "title": "Postcode",
+            "description": "Australian postcode"
+        },
+        "price": {
+            "type": "string",
+            "title": "Price",
+            "description": "Property price (may be range, fixed price, or text like 'Contact Agent')"
+        },
+        "propertyType": {
+            "type": "string",
+            "title": "Property Type",
+            "description": "Type of property (House, Apartment, Townhouse, etc.)"
+        },
+        "beds": {
+            "type": "integer",
+            "title": "Bedrooms",
+            "description": "Number of bedrooms"
+        },
+        "baths": {
+            "type": "integer",
+            "title": "Bathrooms",
+            "description": "Number of bathrooms"
+        },
+        "parking": {
+            "type": "integer",
+            "title": "Parking Spaces",
+            "description": "Number of parking spaces"
+        },
+        "landSize": {
+            "type": "string",
+            "title": "Land Size",
+            "description": "Size of land in square meters"
+        },
+        "floorSize": {
+            "type": "string",
+            "title": "Floor Size",
+            "description": "Internal floor size in square meters"
+        },
+        "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "Full property description"
+        },
+        "agent": {
+            "type": "string",
+            "title": "Agent Name",
+            "description": "Name of the listing agent"
+        },
+        "agency": {
+            "type": "string",
+            "title": "Agency Name",
+            "description": "Name of the real estate agency"
+        },
+        "imageUrl": {
+            "type": "string",
+            "title": "Primary Image URL",
+            "description": "URL of the main property image"
+        },
+        "images": {
+            "type": "array",
+            "title": "All Images",
+            "description": "Array of all property image URLs"
+        },
+        "latitude": {
+            "type": "number",
+            "title": "Latitude",
+            "description": "Geographic latitude coordinate"
+        },
+        "longitude": {
+            "type": "number",
+            "title": "Longitude",
+            "description": "Geographic longitude coordinate"
+        },
+        "inspectionTimes": {
+            "type": "array",
+            "title": "Inspection Times",
+            "description": "Scheduled inspection times for the property"
+        },
+        "features": {
+            "type": "array",
+            "title": "Property Features",
+            "description": "List of property features and amenities"
+        },
+        "isNew": {
+            "type": "boolean",
+            "title": "New Listing",
+            "description": "Whether this is a newly listed property"
+        },
+        "inspectionTime": {
+            "type": "string",
+            "title": "Next Inspection",
+            "description": "Next scheduled inspection time"
+        },
+        "scrapedAt": {
+            "type": "string",
+            "title": "Scraped At",
+            "description": "ISO timestamp when the data was collected"
+        },
+        "source": {
+            "type": "string",
+            "title": "Data Source",
+            "description": "Source of the data (domain.com.au)"
+        }
+    },
+    "views": {
+        "overview": {
+            "title": "Property Overview",
+            "transformation": {
+                "fields": [
+                    "address",
+                    "suburb",
+                    "state",
+                    "price",
+                    "propertyType",
+                    "beds",
+                    "baths",
+                    "parking",
+                    "agency",
+                    "url"
+                ]
+            },
+            "display": {
+                "component": "table",
+                "properties": {
+                    "address": {
+                        "label": "Address",
+                        "format": "text"
+                    },
+                    "price": {
+                        "label": "Price",
+                        "format": "text"
+                    },
+                    "propertyType": {
+                        "label": "Type",
+                        "format": "text"
+                    },
+                    "beds": {
+                        "label": "Beds",
+                        "format": "number"
+                    },
+                    "baths": {
+                        "label": "Baths",
+                        "format": "number"
+                    },
+                    "url": {
+                        "label": "View",
+                        "format": "link"
+                    }
+                }
+            }
+        }
+    }
+}

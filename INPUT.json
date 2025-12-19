@@ -1,0 +1,22 @@
+{
+  "startUrl": "https://www.domain.com.au/sale/?excludeunderoffer=1&sort=dateupdated-desc",
+  "maxResults": 50,
+  "maxPages": 3,
+  "collectDetails": true,
+  "maxConcurrency": 3,
+  "location": null,
+  "state": null,
+  "propertyType": null,
+  "minPrice": null,
+  "maxPrice": null,
+  "minBeds": null,
+  "maxBeds": null,
+  "excludeUnderOffer": true,
+  "sortBy": "dateupdated-desc",
+  "proxyConfiguration": {
+    "useApifyProxy": true,
+    "apifyProxyGroups": [
+      "RESIDENTIAL"
+    ]
+  }
+}
