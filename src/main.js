@@ -1,7 +1,7 @@
-// Domain.com.au Property Scraper - Modern Multi-Method Extraction
+// Domain.com.au Property Scraper - Optimized __NEXT_DATA__/__APOLLO_STATE__ Extraction
 import { Actor, log } from 'apify';
 import { Dataset, gotScraping } from 'crawlee';
-import { chromium } from 'playwright';
+import { firefox } from 'playwright';
 import { load as cheerioLoad } from 'cheerio';
 
 // ============================================================================
@@ -134,7 +134,7 @@ const parsePropertyFeatures = ($elem) => {
 
     // Try to find features from various selectors
     const featureText = $elem.text();
-    
+
     // Extract beds
     const bedsMatch = featureText.match(/(\d+)\s*Bed/i);
     if (bedsMatch) features.beds = parseInt(bedsMatch[1], 10);
@@ -189,71 +189,71 @@ const parseJsonLdProperty = (jsonLd) => {
 
     for (const data of jsonLd) {
         const type = data['@type'];
-        
-        if (type === 'RealEstateListing' || type === 'SingleFamilyResidence' || 
+
+        if (type === 'RealEstateListing' || type === 'SingleFamilyResidence' ||
             type === 'House' || type === 'Apartment' || type === 'Product') {
-            
+
             property.name = data.name || property.name;
-            
+
             if (data.address) {
                 property.address = data.address.streetAddress || property.address;
                 property.suburb = data.address.addressLocality || property.suburb;
                 property.state = data.address.addressRegion || property.state;
                 property.postcode = data.address.postalCode || property.postcode;
             }
-            
+
             if (data.geo) {
                 property.latitude = data.geo.latitude;
                 property.longitude = data.geo.longitude;
             }
-            
-        if (data.offers) {
-            const offers = Array.isArray(data.offers) ? data.offers[0] : data.offers;
-            property.price = offers.price || offers.priceSpecification?.price;
-            property.priceCurrency = offers.priceCurrency;
-        }
-            
-        if (!property.landSize) {
-            const landValue =
-                data.lotSize?.value ||
-                data.lotSize ||
-                data.landSize?.value ||
-                data.landSize ||
-                data.area?.value ||
-                data.area;
-            if (landValue) {
-                property.landSize = `${landValue}m2`;
+
+            if (data.offers) {
+                const offers = Array.isArray(data.offers) ? data.offers[0] : data.offers;
+                property.price = offers.price || offers.priceSpecification?.price;
+                property.priceCurrency = offers.priceCurrency;
             }
-        }
 
-        if (!property.agency) {
-            property.agency =
-                data.seller?.name ||
-                data.provider?.name ||
-                data.brand?.name ||
-                data.publisher?.name ||
-                property.agency;
-        }
+            if (!property.landSize) {
+                const landValue =
+                    data.lotSize?.value ||
+                    data.lotSize ||
+                    data.landSize?.value ||
+                    data.landSize ||
+                    data.area?.value ||
+                    data.area;
+                if (landValue) {
+                    property.landSize = `${landValue}m2`;
+                }
+            }
 
-        if (!property.agent) {
-            property.agent =
-                data.seller?.employee?.name ||
-                data.provider?.employee?.name ||
-                data.seller?.contactPoint?.name ||
-                data.provider?.contactPoint?.name ||
-                property.agent;
-        }
-            
+            if (!property.agency) {
+                property.agency =
+                    data.seller?.name ||
+                    data.provider?.name ||
+                    data.brand?.name ||
+                    data.publisher?.name ||
+                    property.agency;
+            }
+
+            if (!property.agent) {
+                property.agent =
+                    data.seller?.employee?.name ||
+                    data.provider?.employee?.name ||
+                    data.seller?.contactPoint?.name ||
+                    data.provider?.contactPoint?.name ||
+                    property.agent;
+            }
+
             property.description = data.description || property.description;
             property.numberOfRooms = data.numberOfRooms || property.numberOfRooms;
             property.floorSize = data.floorSize?.value || property.floorSize;
             property.numberOfBedrooms = data.numberOfBedrooms || property.numberOfBedrooms;
             property.numberOfBathroomsTotal = data.numberOfBathroomsTotal || property.numberOfBathroomsTotal;
-            
-        if (data.image) {
-            property.images = Array.isArray(data.image) ? data.image : [data.image];
+
+            if (data.image) {
+                property.images = Array.isArray(data.image) ? data.image : [data.image];
+            }
         }
-    }
     }
 
     return Object.keys(property).length > 0 ? property : null;
@@ -286,19 +286,88 @@ const safeJsonParse = (maybeJson) => {
     }
 };
 
+/**
+ * Extract __NEXT_DATA__ with __APOLLO_STATE__ - Domain.com.au's primary data source
+ * This is the FASTEST method as all data is pre-rendered in the page source
+ */
+const extractNextDataApolloState = (html) => {
+    // Primary method: Extract __NEXT_DATA__ script tag
+    const nextDataMatch = html.match(/<script[^>]+id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+    if (nextDataMatch?.[1]) {
+        const nextData = safeJsonParse(nextDataMatch[1]);
+        if (nextData) {
+            // Check for __APOLLO_STATE__ in props
+            const apolloState = nextData?.props?.pageProps?.__APOLLO_STATE__
+                || nextData?.props?.__APOLLO_STATE__
+                || nextData?.__APOLLO_STATE__;
+
+            if (apolloState) {
+                log.debug('✅ Found __APOLLO_STATE__ in __NEXT_DATA__');
+                return { apolloState, nextData };
+            }
+
+            // Also check for data directly in pageProps
+            if (nextData?.props?.pageProps) {
+                log.debug('✅ Found pageProps in __NEXT_DATA__');
+                return { nextData, pageProps: nextData.props.pageProps };
+            }
+
+            return { nextData };
+        }
+    }
+    return null;
+};
+
+/**
+ * Extract listings from __APOLLO_STATE__ object
+ * Domain.com.au stores listings with keys like "Listing:<id>" or "PropertyListing:<id>"
+ */
+const extractListingsFromApolloState = (apolloState) => {
+    if (!apolloState || typeof apolloState !== 'object') return [];
+
+    const listings = [];
+    const listingPatterns = [
+        /^Listing:/,
+        /^PropertyListing:/,
+        /^SearchListing:/,
+        /^RentListing:/,
+        /^SaleListing:/,
+    ];
+
+    for (const [key, value] of Object.entries(apolloState)) {
+        // Check if key matches listing pattern
+        const isListing = listingPatterns.some(pattern => pattern.test(key));
+
+        if (isListing && value && typeof value === 'object') {
+            listings.push(value);
+        }
+    }
+
+    log.debug(`Found ${listings.length} listings in __APOLLO_STATE__`);
+    return listings;
+};
+
+/**
+ * Fallback: Extract embedded state from other script patterns
+ */
 const extractEmbeddedState = (html) => {
+    // First try the optimized __NEXT_DATA__ extraction
+    const nextDataResult = extractNextDataApolloState(html);
+    if (nextDataResult) {
+        return nextDataResult;
+    }
+
+    // Fallback patterns for older page structures
     const patterns = [
-        /window\.__APOLLO_STATE__\s*=\s*({.*?})\s*;?/s,
-        /window\.__INITIAL_STATE__\s*=\s*({.*?})\s*;?/s,
-        /<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)<\/script>/s,
-        /<script[^>]+type="application\/json"[^>]*>(.*?)<\/script>/s,
+        /window\.__APOLLO_STATE__\s*=\s*({[\s\S]*?})\s*;/,
+        /window\.__INITIAL_STATE__\s*=\s*({[\s\S]*?})\s*;/,
     ];
 
     for (const pattern of patterns) {
         const match = html.match(pattern);
         if (match?.[1]) {
             const parsed = safeJsonParse(match[1]);
-            if (parsed) return parsed;
+            if (parsed) return { apolloState: parsed };
         }
     }
 
@@ -309,14 +378,14 @@ const isListingLike = (obj) => {
     if (!obj || typeof obj !== 'object') return false;
     return Boolean(
         obj.listingId ||
-            obj.listingSlug ||
-            obj.id ||
-            obj.propertyDetails ||
-            obj.address ||
-            obj.addressParts ||
-            obj.priceDetails ||
-            obj.media ||
-            obj.url,
+        obj.listingSlug ||
+        obj.id ||
+        obj.propertyDetails ||
+        obj.address ||
+        obj.addressParts ||
+        obj.priceDetails ||
+        obj.media ||
+        obj.url,
     );
 };
 
@@ -568,9 +637,9 @@ const addMetadata = (property) => {
 const scrapeListingPage = async ({ url, proxyConfiguration, html = null, currentPage = 1 }) => {
     try {
         log.debug(`Scraping listing page: ${url}`);
-        
+
         let pageHtml = html;
-        
+
         if (!pageHtml) {
             const headers = createStealthHeaders();
 
@@ -594,18 +663,37 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null, current
         let totalResults = null;
         let nextPageCandidate = null;
 
+        // PRIMARY METHOD: Extract from __NEXT_DATA__/__APOLLO_STATE__ (fastest)
         const embeddedState = extractEmbeddedState(pageHtml);
         if (embeddedState) {
-            const embeddedResult = extractListingsFromJsonPayload({
-                payload: embeddedState,
-                sourceUrl: url,
-                currentPage,
-            });
-            if (embeddedResult.properties.length > 0) {
-                log.debug(`Extracted ${embeddedResult.properties.length} listings from embedded JSON`);
-                embeddedResult.properties.forEach((p) => properties.push(addMetadata(p)));
-                totalResults = embeddedResult.totalResults || totalResults;
-                nextPageCandidate = embeddedResult.nextPage || nextPageCandidate;
+            // Try Apollo State extraction first (most reliable)
+            if (embeddedState.apolloState) {
+                const apolloListings = extractListingsFromApolloState(embeddedState.apolloState);
+                if (apolloListings.length > 0) {
+                    log.info(`⚡ Found ${apolloListings.length} listings via __APOLLO_STATE__ (fastest method)`);
+                    for (const listing of apolloListings) {
+                        const normalized = normalizeListingFromJson(listing);
+                        if (normalized) {
+                            properties.push(addMetadata(normalized));
+                        }
+                    }
+                }
+            }
+
+            // If Apollo State didn't yield results, try pageProps or full payload
+            if (properties.length === 0) {
+                const payload = embeddedState.pageProps || embeddedState.nextData || embeddedState;
+                const embeddedResult = extractListingsFromJsonPayload({
+                    payload,
+                    sourceUrl: url,
+                    currentPage,
+                });
+                if (embeddedResult.properties.length > 0) {
+                    log.debug(`Extracted ${embeddedResult.properties.length} listings from pageProps/nextData`);
+                    embeddedResult.properties.forEach((p) => properties.push(addMetadata(p)));
+                    totalResults = embeddedResult.totalResults || totalResults;
+                    nextPageCandidate = embeddedResult.nextPage || nextPageCandidate;
+                }
             }
         }
 
@@ -616,17 +704,17 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null, current
 
         // Parse property cards from HTML - multiple selector strategies
         let propertyCards = [];
-        
+
         // Strategy 1: Try data-testid selectors (newer Domain interface)
         propertyCards = $('[data-testid*="listing-card"]').toArray();
         log.debug(`[Strategy 1] Found ${propertyCards.length} cards with data-testid`);
-        
+
         // Strategy 2: Try class-based selectors (common pattern)
         if (propertyCards.length === 0) {
             propertyCards = $('article.listing-card, article[class*="listing"], div[class*="property-card"]').toArray();
             log.debug(`[Strategy 2] Found ${propertyCards.length} cards with class selectors`);
         }
-        
+
         // Strategy 3: Try generic container selectors
         if (propertyCards.length === 0) {
             propertyCards = $('article, [role="listitem"]').toArray();
@@ -637,7 +725,7 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null, current
             log.warning('❌ No property cards found with any selector strategy');
             log.debug(`Page HTML sample: ${pageHtml.substring(0, 500)}`);
         }
-        
+
         if (propertyCards.length > MAX_CARD_PARSE) {
             propertyCards = propertyCards.slice(0, MAX_CARD_PARSE);
         }
@@ -645,9 +733,9 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null, current
         for (const card of propertyCards) {
             try {
                 const $card = $(card);
-                
+
                 const property = {};
-                
+
                 // Extract URL - pick the most likely listing link
                 const hrefs = $card
                     .find('a[href]')
@@ -716,7 +804,7 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null, current
 
                 properties.push(addMetadata(property));
                 log.debug(`✅ Extracted property: ${property.address} - $${property.price}`);
-                
+
             } catch (err) {
                 log.warning(`⚠️  Failed to parse property card: ${err.message}`);
             }
@@ -750,19 +838,18 @@ const scrapeListingPage = async ({ url, proxyConfiguration, html = null, current
 const scrapeViaPlaywright = async ({ url, proxyConfiguration, currentPage = 1 }) => {
     let browser;
     let context;
-    
+
     try {
         log.debug(`Scraping via Playwright: ${url}`);
-        
+
+        // Firefox launch options (more stealthy than Chromium)
         const launchOptions = {
             headless: true,
-            args: [
-                '--disable-blink-features=AutomationControlled',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-            ],
+            // Firefox-specific args for stealth
+            firefoxUserPrefs: {
+                'dom.webdriver.enabled': false,
+                'useAutomationExtension': false,
+            },
         };
 
         if (proxyConfiguration) {
@@ -770,7 +857,8 @@ const scrapeViaPlaywright = async ({ url, proxyConfiguration, currentPage = 1 })
             launchOptions.proxy = { server: proxyUrl };
         }
 
-        browser = await chromium.launch(launchOptions);
+        // Use Firefox instead of Chromium for better stealth
+        browser = await firefox.launch(launchOptions);
         context = await browser.newContext({
             userAgent: getRandomUserAgent(),
             viewport: { width: 1920, height: 1080 },
@@ -778,17 +866,17 @@ const scrapeViaPlaywright = async ({ url, proxyConfiguration, currentPage = 1 })
         });
 
         const page = await context.newPage();
-        
+
         // Navigate to page
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-        
+
         // Wait for content to load
         try {
             await page.waitForSelector('[data-testid="listing-card-wrapper"], .css-1qp9106', { timeout: 30000 });
         } catch (e) {
             log.warning('Timeout waiting for property cards, continuing anyway');
         }
-        
+
         // Scroll to load lazy images
         await page.evaluate(async () => {
             await new Promise((resolve) => {
@@ -809,7 +897,7 @@ const scrapeViaPlaywright = async ({ url, proxyConfiguration, currentPage = 1 })
 
         // Get page content
         const html = await page.content();
-        
+
         await browser.close();
 
         // Parse with cheerio
@@ -834,7 +922,7 @@ const scrapeViaPlaywright = async ({ url, proxyConfiguration, currentPage = 1 })
 const scrapePropertyDetails = async ({ url, proxyConfiguration }) => {
     try {
         log.debug(`Scraping property details: ${url}`);
-        
+
         const headers = createStealthHeaders();
 
         let response = null;
@@ -872,7 +960,7 @@ const scrapePropertyDetails = async ({ url, proxyConfiguration }) => {
         // Extract JSON-LD first
         const jsonLdData = extractJsonLd(response.body);
         const jsonLdProperty = parseJsonLdProperty(jsonLdData);
-        
+
         if (jsonLdProperty) {
             Object.assign(details, jsonLdProperty);
         }
@@ -1037,7 +1125,7 @@ const scrapePropertyDetails = async ({ url, proxyConfiguration }) => {
 
 Actor.main(async () => {
     const input = await Actor.getInput();
-    
+
     const {
         startUrl = 'https://www.domain.com.au/sale/?excludeunderoffer=1&sort=dateupdated-desc',
         maxResults = 50,
@@ -1058,7 +1146,7 @@ Actor.main(async () => {
     // ========================================================================
     // INPUT VALIDATION
     // ========================================================================
-    
+
     const validatedMaxResults = Math.max(1, Math.min(maxResults || 50, 1000));
     const validatedMaxPages = Math.max(1, Math.min(maxPages || 5, 50));
     const pageEstimate = Math.ceil(validatedMaxResults / Math.max(20, DEFAULT_PAGE_SIZE));
@@ -1070,24 +1158,24 @@ Actor.main(async () => {
             Math.ceil(validatedMaxResults / 15), // ensure enough pages when dedup/filters drop items
         ),
     );
-    
+
     if (!startUrl.includes('domain.com.au')) {
         throw new Error('❌ Invalid input: startUrl must be from domain.com.au');
     }
 
-    log.info('✅ Domain.com.au Property Scraper started', { 
-        startUrl, 
-        maxResults: validatedMaxResults, 
+    log.info('✅ Domain.com.au Property Scraper started', {
+        startUrl,
+        maxResults: validatedMaxResults,
         maxPages: pageLimit,
         collectDetails,
     });
 
     // Build search URL with filters
     let searchUrl = startUrl;
-    
+
     if (location || propertyType || minPrice || maxPrice || minBeds || state) {
         let baseUrl = DOMAIN_BASE;
-        
+
         if (state) {
             baseUrl = `${DOMAIN_BASE}/sale/${state.toLowerCase()}/`;
         } else if (location) {
@@ -1095,9 +1183,9 @@ Actor.main(async () => {
         } else {
             baseUrl = `${DOMAIN_BASE}/sale/`;
         }
-        
+
         const params = new URLSearchParams();
-        
+
         if (propertyType) {
             const typeMap = {
                 'house': 'House',
@@ -1108,7 +1196,7 @@ Actor.main(async () => {
             };
             params.append('ptype', typeMap[propertyType.toLowerCase()] || propertyType);
         }
-        
+
         if (minPrice && maxPrice) {
             params.append('price', `${minPrice}-${maxPrice}`);
         } else if (minPrice) {
@@ -1116,14 +1204,14 @@ Actor.main(async () => {
         } else if (maxPrice) {
             params.append('price', `any-${maxPrice}`);
         }
-        
+
         if (minBeds) {
             params.append('bedrooms', minBeds);
         }
-        
+
         params.append('excludeunderoffer', '1');
         params.append('sort', sortBy);
-        
+
         searchUrl = `${baseUrl}?${params.toString()}`;
     }
 
@@ -1263,10 +1351,10 @@ function createConcurrencyLimiter(maxConcurrency) {
 
     const next = () => {
         if (active >= maxConcurrency || queue.length === 0) return;
-        
+
         active++;
         const { task, resolve, reject } = queue.shift();
-        
+
         task()
             .then(resolve)
             .catch(reject)
