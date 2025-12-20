@@ -1124,13 +1124,13 @@ const scrapePropertyDetails = async ({ url, proxyConfiguration }) => {
 // ============================================================================
 
 Actor.main(async () => {
-    const input = await Actor.getInput();
+    const input = await Actor.getInput() || {};
 
     const {
-        startUrl = 'https://www.domain.com.au/sale/?excludeunderoffer=1&sort=dateupdated-desc',
-        maxResults = 50,
-        maxPages = 5,
-        collectDetails = true,
+        startUrl,
+        maxResults = 10,
+        maxPages = 1,
+        collectDetails = false,
         proxyConfiguration,
         location = null,
         propertyType = null,
@@ -1144,42 +1144,36 @@ Actor.main(async () => {
     const proxyConfig = proxyConfiguration ? await Actor.createProxyConfiguration(proxyConfiguration) : null;
 
     // ========================================================================
-    // INPUT VALIDATION
+    // INPUT VALIDATION & URL BUILDING
     // ========================================================================
 
-    const validatedMaxResults = Math.max(1, Math.min(maxResults || 50, 1000));
-    const validatedMaxPages = Math.max(1, Math.min(maxPages || 5, 50));
+    const validatedMaxResults = Math.max(1, Math.min(maxResults || 10, 1000));
+    const validatedMaxPages = Math.max(1, Math.min(maxPages || 1, 50));
     const pageEstimate = Math.ceil(validatedMaxResults / Math.max(20, DEFAULT_PAGE_SIZE));
     const pageLimit = Math.min(
         50,
         Math.max(
             validatedMaxPages,
             pageEstimate,
-            Math.ceil(validatedMaxResults / 15), // ensure enough pages when dedup/filters drop items
+            Math.ceil(validatedMaxResults / 15),
         ),
     );
 
-    if (!startUrl.includes('domain.com.au')) {
-        throw new Error('❌ Invalid input: startUrl must be from domain.com.au');
-    }
+    // Build search URL - prioritize state/location/filters over startUrl
+    let searchUrl;
 
-    log.info('✅ Domain.com.au Property Scraper started', {
-        startUrl,
-        maxResults: validatedMaxResults,
-        maxPages: pageLimit,
-        collectDetails,
-    });
-
-    // Build search URL with filters
-    let searchUrl = startUrl;
-
-    if (location || propertyType || minPrice || maxPrice || minBeds || state) {
-        let baseUrl = DOMAIN_BASE;
+    if (state || location || propertyType || minPrice || maxPrice || minBeds) {
+        // Build URL from filters
+        let baseUrl;
 
         if (state) {
+            // State-based URL format: https://www.domain.com.au/sale/nsw/
             baseUrl = `${DOMAIN_BASE}/sale/${state.toLowerCase()}/`;
+            log.info(`🇦🇺 Building state-based search URL for: ${state.toUpperCase()}`);
         } else if (location) {
+            // Location-based URL format
             baseUrl = `${DOMAIN_BASE}/sale/${location.toLowerCase().replace(/\s+/g, '-')}/`;
+            log.info(`📍 Building location-based search URL for: ${location}`);
         } else {
             baseUrl = `${DOMAIN_BASE}/sale/`;
         }
@@ -1188,11 +1182,11 @@ Actor.main(async () => {
 
         if (propertyType) {
             const typeMap = {
-                'house': 'House',
-                'apartment': 'ApartmentUnitFlat',
-                'townhouse': 'Townhouse',
-                'villa': 'Villa',
-                'land': 'VacantLand',
+                'house': 'house',
+                'apartment': 'apartment-unit-flat',
+                'townhouse': 'townhouse',
+                'villa': 'villa',
+                'land': 'vacant-land',
             };
             params.append('ptype', typeMap[propertyType.toLowerCase()] || propertyType);
         }
@@ -1206,14 +1200,34 @@ Actor.main(async () => {
         }
 
         if (minBeds) {
-            params.append('bedrooms', minBeds);
+            params.append('bedrooms', String(minBeds));
         }
 
         params.append('excludeunderoffer', '1');
         params.append('sort', sortBy);
 
-        searchUrl = `${baseUrl}?${params.toString()}`;
+        const queryString = params.toString();
+        searchUrl = queryString ? `${baseUrl}?${queryString}` : baseUrl;
+    } else if (startUrl && startUrl.includes('domain.com.au')) {
+        // Use provided startUrl directly
+        searchUrl = startUrl;
+    } else {
+        // Default fallback
+        searchUrl = `${DOMAIN_BASE}/sale/?excludeunderoffer=1&sort=dateupdated-desc`;
     }
+
+    // Final validation
+    if (!searchUrl.includes('domain.com.au')) {
+        throw new Error('❌ Invalid configuration: Unable to construct valid Domain.com.au URL');
+    }
+
+    log.info('✅ Domain.com.au Property Scraper started', {
+        searchUrl,
+        maxResults: validatedMaxResults,
+        maxPages: pageLimit,
+        collectDetails,
+        state: state || 'All Australia',
+    });
 
     log.info(`🔍 Final search URL: ${searchUrl}`);
 

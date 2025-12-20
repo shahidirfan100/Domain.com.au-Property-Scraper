@@ -7,34 +7,68 @@
     "startUrl": {
       "title": "Search URL",
       "type": "string",
-      "description": "Domain.com.au search URL to scrape properties from. Default searches all properties for sale in Australia.",
+      "description": "Domain.com.au search URL to scrape properties from. Leave empty to use state/location filters or default Australia-wide search.",
       "editor": "textfield",
-      "example": "https://www.domain.com.au/sale/",
-      "default": "https://www.domain.com.au/sale/",
-      "prefill": "https://www.domain.com.au/sale/"
-    },
-    "location": {
-      "title": "Location",
-      "type": "string",
-      "description": "Specific location to search (e.g., 'sydney', 'melbourne', 'brisbane'). Leave empty to use startUrl.",
-      "editor": "textfield",
-      "example": "sydney-nsw"
+      "example": "https://www.domain.com.au/sale/sydney-nsw/"
     },
     "state": {
-      "title": "State",
+      "title": "State/Territory",
       "type": "string",
-      "description": "Australian state to search in (nsw, vic, qld, wa, sa, tas, act, nt).",
+      "description": "Select an Australian state or territory to search. Takes priority over startUrl when selected.",
       "editor": "select",
-      "enum": ["nsw", "vic", "qld", "wa", "sa", "tas", "act", "nt"],
-      "enumTitles": ["New South Wales", "Victoria", "Queensland", "Western Australia", "South Australia", "Tasmania", "Australian Capital Territory", "Northern Territory"]
+      "enum": [
+        "",
+        "nsw",
+        "vic",
+        "qld",
+        "wa",
+        "sa",
+        "tas",
+        "act",
+        "nt"
+      ],
+      "enumTitles": [
+        "All Australia",
+        "New South Wales",
+        "Victoria",
+        "Queensland",
+        "Western Australia",
+        "South Australia",
+        "Tasmania",
+        "Australian Capital Territory",
+        "Northern Territory"
+      ],
+      "default": ""
+    },
+    "location": {
+      "title": "Location/Suburb",
+      "type": "string",
+      "description": "Specific suburb or location to search (e.g., 'sydney-nsw', 'melbourne-vic'). Takes priority over startUrl when provided.",
+      "editor": "textfield",
+      "example": "sydney-nsw"
     },
     "propertyType": {
       "title": "Property Type",
       "type": "string",
       "description": "Filter by property type.",
       "editor": "select",
-      "enum": ["house", "apartment", "townhouse", "villa", "land"],
-      "enumTitles": ["House", "Apartment/Unit/Flat", "Townhouse", "Villa", "Vacant Land"]
+      "enum": [
+        "",
+        "house",
+        "apartment",
+        "townhouse",
+        "villa",
+        "land"
+      ],
+      "enumTitles": [
+        "All Types",
+        "House",
+        "Apartment/Unit/Flat",
+        "Townhouse",
+        "Villa",
+        "Vacant Land"
+      ],
+      "default": ""
     },
     "minPrice": {
       "title": "Minimum Price (AUD)",
@@ -66,16 +100,19 @@
       "type": "string",
       "description": "How to sort the search results.",
       "editor": "select",
-      "enum": ["dateupdated-desc", "price-asc", "price-desc", "suburb-asc"],
-      "enumTitles": ["Date Updated (Newest First)", "Price (Low to High)", "Price (High to Low)", "Suburb (A-Z)"],
+      "enum": [
+        "dateupdated-desc",
+        "price-asc",
+        "price-desc",
+        "suburb-asc"
+      ],
+      "enumTitles": [
+        "Date Updated (Newest First)",
+        "Price (Low to High)",
+        "Price (High to Low)",
+        "Suburb (A-Z)"
+      ],
       "default": "dateupdated-desc"
-    },
-    "collectDetails": {
-      "title": "Collect Full Property Details",
-      "type": "boolean",
-      "description": "Visit each property detail page to extract complete descriptions, photos, inspection times, and additional information. Increases runtime but provides comprehensive data.",
-      "editor": "checkbox",
-      "default": false
     },
     "maxResults": {
       "title": "Maximum Properties",
@@ -84,6 +121,7 @@
       "minimum": 1,
       "maximum": 1000,
       "default": 10,
+      "prefill": 10,
       "editor": "number"
     },
     "maxPages": {
@@ -92,8 +130,17 @@
       "description": "Maximum number of result pages to process (each page typically contains 20-30 properties).",
       "minimum": 1,
       "maximum": 50,
-      "editor": "number",
-      "default": 1
+      "default": 1,
+      "prefill": 1,
+      "editor": "number"
+    },
+    "collectDetails": {
+      "title": "Collect Full Property Details",
+      "type": "boolean",
+      "description": "Visit each property detail page for complete descriptions, photos, and inspection times. Increases runtime but provides comprehensive data.",
+      "editor": "checkbox",
+      "default": false,
+      "prefill": false
     },
     "proxyConfiguration": {
       "title": "Proxy Configuration",
